@@ -1,5 +1,6 @@
 const params    = new URLSearchParams(window.location.hash.slice(1));
 const bookingId = decodeURIComponent(params.get('bid') || '');
+const directWoId = decodeURIComponent(params.get('wo') || '');
 const orgUrl    = decodeURIComponent(params.get('org') || '');
 
 const apiWv = document.getElementById('api-wv');
@@ -82,13 +83,21 @@ async function init() {
   try {
     await waitForXrm();
 
-    [booking, bookingStatuses, resources] = await Promise.all([
-      xrmGet('bookableresourcebooking', bookingId, ''),
-      xrmList('bookingstatus', '?$select=bookingstatusid,name,statuscode&$orderby=name asc'),
-      xrmList('bookableresource', '?$select=bookableresourceid,name&$orderby=name asc'),
-    ]);
+    if (directWoId) {
+      woId = directWoId;
+      bookingStatuses = [];
+      resources = [];
+      $('booking-card').classList.add('hidden');
+      $('wo-status-row').classList.add('hidden');
+    } else {
+      [booking, bookingStatuses, resources] = await Promise.all([
+        xrmGet('bookableresourcebooking', bookingId, ''),
+        xrmList('bookingstatus', '?$select=bookingstatusid,name,statuscode&$orderby=name asc'),
+        xrmList('bookableresource', '?$select=bookableresourceid,name&$orderby=name asc'),
+      ]);
+      woId = booking._msdyn_workorder_value;
+    }
 
-    woId = booking._msdyn_workorder_value;
     if (woId) {
       wo = await xrmGet('msdyn_workorder', woId,
         '?$select=msdyn_name,msdyn_systemstatus,msdyn_workordersummary,msdyn_instructions,' +
@@ -109,8 +118,7 @@ async function init() {
       incident = incidents[0] || null;
     }
 
-    buildStatusDropdown();
-    buildResourceDropdown();
+    if (booking) { buildStatusDropdown(); buildResourceDropdown(); }
     renderAll();
     listenEdits();
     wireOpenDynamics();
@@ -140,7 +148,7 @@ function wireOpenDynamics() {
   const url = woId
     ? `${orgUrl}/main.aspx?appid=${APP_ID}&pagetype=entityrecord&etn=msdyn_workorder&id=${woId}`
     : `${orgUrl}/main.aspx?appid=${APP_ID}&pagetype=entityrecord&etn=bookableresourcebooking&id=${bookingId}`;
-  $('open-dynamics-btn').addEventListener('click', () => window.api.openExternal(url));
+  $('open-dynamics-btn')?.addEventListener('click', () => window.api.openExternal(url));
 }
 
 function buildStatusDropdown() {
@@ -156,26 +164,27 @@ function buildStatusDropdown() {
 }
 
 function renderAll() {
-  const statusName = booking.BookingStatus?.name || fv(booking,'_bookingstatus_value') || 'Unknown';
   const woNum      = wo?.msdyn_name || '';
   const account    = wo ? fv(wo,'_msdyn_serviceaccount_value') : '';
 
-  $('titlebar-label').textContent = woNum || booking.name || 'Booking';
+  $('titlebar-label').textContent = woNum || booking?.name || 'Work Order';
   $('wo-number').textContent      = woNum || '—';
   $('wo-account').textContent     = account;
-  $('wo-booking-ref').textContent = booking.name ? `Booking: ${booking.name}` : '';
-  document.title = woNum || booking.name || 'Booking';
+  $('wo-booking-ref').textContent = booking?.name ? `Booking: ${booking.name}` : '';
+  document.title = woNum || booking?.name || 'Work Order';
 
-  // Booking fields
-  $('f-start').value   = isoToLocal(booking.starttime);
-  $('f-end').value     = isoToLocal(booking.endtime);
-  $('f-arrival').value = isoToLocal(
-    Object.entries(booking).find(([k,v]) => !k.includes('@') && (k.toLowerCase().includes('arriv') || k.toLowerCase().includes('actual')) && v)?.[1] || ''
-  );
-  // debug: show candidate fields in placeholder
-  const candidates = Object.entries(booking).filter(([k,v]) => !k.includes('@') && typeof v === 'string' && v.includes('T') && v.includes('Z')).map(([k,v])=>`${k}: ${v}`).join(' | ');
-  if (!$('f-arrival').value) $('f-arrival').title = candidates;
-  set('d-duration',  fmtDuration(booking.duration));
+  if (booking) {
+    // Booking fields
+    $('f-start').value   = isoToLocal(booking.starttime);
+    $('f-end').value     = isoToLocal(booking.endtime);
+    $('f-arrival').value = isoToLocal(
+      Object.entries(booking).find(([k,v]) => !k.includes('@') && (k.toLowerCase().includes('arriv') || k.toLowerCase().includes('actual')) && v)?.[1] || ''
+    );
+    // debug: show candidate fields in placeholder
+    const candidates = Object.entries(booking).filter(([k,v]) => !k.includes('@') && typeof v === 'string' && v.includes('T') && v.includes('Z')).map(([k,v])=>`${k}: ${v}`).join(' | ');
+    if (!$('f-arrival').value) $('f-arrival').title = candidates;
+    set('d-duration',  fmtDuration(booking.duration));
+  }
 
   // WO fields
   const WO_STATUS = {690970000:'Unscheduled',690970001:'Scheduled',690970002:'In Progress',690970003:'Completed',690970004:'Posted',690970005:'Canceled'};
@@ -282,8 +291,7 @@ async function save() {
 
 function discard() {
   dirty = {};
-  buildStatusDropdown();
-  buildResourceDropdown();
+  if (booking) { buildStatusDropdown(); buildResourceDropdown(); }
   renderAll();
   $('save-btn').classList.add('hidden');
   $('discard-btn').classList.add('hidden');

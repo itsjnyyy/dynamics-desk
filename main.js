@@ -65,6 +65,40 @@ ipcMain.handle('open-workorder', (_, { workOrderId, orgUrl, title }) => {
   woWin.setMenuBarVisibility(false);
 });
 
+ipcMain.handle('open-workorder-direct', (_, { workOrderId, orgUrl, title }) => {
+  const woWin = new BrowserWindow({
+    width: 1200, height: 840, minWidth: 900, minHeight: 600,
+    frame: false, backgroundColor: '#0d0f14',
+    title: title || 'Work Order', show: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-workorder.js'),
+      contextIsolation: true, nodeIntegration: false, webviewTag: true
+    }
+  });
+  woWin.loadFile(path.join(__dirname, 'renderer', 'workorder.html'), {
+    hash: `wo=${encodeURIComponent(workOrderId)}&org=${encodeURIComponent(orgUrl)}`
+  });
+  woWin.once('ready-to-show', () => woWin.show());
+  woWin.setMenuBarVisibility(false);
+});
+
+ipcMain.handle('open-contact', (_, { contactId, orgUrl, title }) => {
+  const cWin = new BrowserWindow({
+    width: 760, height: 640, minWidth: 600, minHeight: 480,
+    frame: false, backgroundColor: '#0d0f14',
+    title: title || 'Contact', show: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-workorder.js'),
+      contextIsolation: true, nodeIntegration: false, webviewTag: true
+    }
+  });
+  cWin.loadFile(path.join(__dirname, 'renderer', 'contact.html'), {
+    hash: `cid=${encodeURIComponent(contactId)}&org=${encodeURIComponent(orgUrl)}`
+  });
+  cWin.once('ready-to-show', () => cWin.show());
+  cWin.setMenuBarVisibility(false);
+});
+
 const { shell } = require('electron');
 ipcMain.handle('open-external', (_, url) => shell.openExternal(url));
 ipcMain.handle('wo-minimize', e => BrowserWindow.fromWebContents(e.sender)?.minimize());

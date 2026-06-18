@@ -7,4 +7,6 @@ contextBridge.exposeInMainWorld('api', {
   close:        ()           => ipcRenderer.invoke('close'),
   openRecord:    (url, title)              => ipcRenderer.invoke('open-record',    { url, title }),
   openWorkOrder: (workOrderId, orgUrl, title) => ipcRenderer.invoke('open-workorder', { workOrderId, orgUrl, title }),
+  openWorkOrderDirect: (workOrderId, orgUrl, title) => ipcRenderer.invoke('open-workorder-direct', { workOrderId, orgUrl, title }),
+  openContact: (contactId, orgUrl, title) => ipcRenderer.invoke('open-contact', { contactId, orgUrl, title }),
 });

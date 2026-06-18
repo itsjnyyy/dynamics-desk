@@ -162,20 +162,36 @@ async function waitForXrm() {
 function setStatus(msg) { $('titlebar-status').textContent = msg; }
 
 // ── Xrm.WebApi fetch ──────────────────────────────────────────────────────
-async function xrmFetch(entity, query = '') {
+async function xrmFetchPage(entity, query) {
   if (!xrmReady) throw new Error('Xrm not ready');
   const safeQuery = query.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/'/g, "\\'");
   const script = `
     new Promise((resolve, reject) => {
       try {
         Xrm.WebApi.retrieveMultipleRecords('${entity}', '${safeQuery}')
-          .then(r => resolve(JSON.stringify(r.entities)))
+          .then(r => resolve(JSON.stringify({ entities: r.entities, nextLink: r.nextLink })))
           .catch(e => reject(String(e.message || e)));
       } catch(ex) { reject(String(ex.message || ex)); }
     })
   `;
   const json = await apiWv.executeJavaScript(script);
   return JSON.parse(json);
+}
+
+async function xrmFetch(entity, query = '') {
+  if (!xrmReady) throw new Error('Xrm not ready');
+  let all = [];
+  let page = await xrmFetchPage(entity, query);
+  all = all.concat(page.entities);
+  let nextLink = page.nextLink;
+  while (nextLink) {
+    const qs = nextLink.split('?')[1];
+    if (!qs) break;
+    page = await xrmFetchPage(entity, '?' + qs);
+    all = all.concat(page.entities);
+    nextLink = page.nextLink;
+  }
+  return all;
 }
 
 // ── Tab navigation ─────────────────────────────────────────────────────────
@@ -605,31 +621,36 @@ $('week-today-btn').addEventListener('click',   () => { weekOffset = 0; renderSc
 $('schedule-refresh').addEventListener('click', () => renderSchedule(true));
 
 // ── ACCOUNTS ───────────────────────────────────────────────────────────────
+const ACCOUNTS_SELECT = 'accountid,name,emailaddress1,telephone1,address1_city';
+let accountsRowMap = {};
 let accountsSearch = '';
+let accountsSearchTimer = null;
 
 async function loadAccounts(force = false) {
   if (cache.accounts && !force) { renderAccounts(cache.accounts); return; }
   showState('accounts', 'loading');
   try {
-    const records = await xrmFetch('account',
-      '?$select=name,emailaddress1,telephone1,address1_city&$orderby=name asc&$top=5000'
+    const page = await xrmFetchPage('account',
+      `?$select=${ACCOUNTS_SELECT}&$orderby=name asc&$top=500`
     );
-    cache.accounts = records;
-    renderAccounts(records);
+    cache.accounts = page.entities;
+    renderAccounts(cache.accounts);
   } catch (e) { showState('accounts', 'empty'); console.error('Accounts error:', e); }
 }
 
-function renderAccounts(records) {
-  let rows = records;
-  if (accountsSearch) {
-    const q = accountsSearch.toLowerCase();
-    rows = records.filter(r =>
-      (r.name||'').toLowerCase().includes(q) ||
-      (r.emailaddress1||'').toLowerCase().includes(q) ||
-      (r.address1_city||'').toLowerCase().includes(q)
+async function searchAccounts(q) {
+  showState('accounts', 'loading');
+  try {
+    const safe = q.replace(/'/g, "''");
+    const records = await xrmFetch('account',
+      `?$select=${ACCOUNTS_SELECT}&$filter=contains(name,'${safe}')&$orderby=name asc&$top=500`
     );
-  }
-  rows = [...rows].sort((a, b) => {
+    renderAccounts(records);
+  } catch (e) { showState('accounts', 'empty'); console.error('Accounts search error:', e); }
+}
+
+function renderAccounts(records) {
+  let rows = [...records].sort((a, b) => {
     const an = (a.name || '').trim(), bn = (b.name || '').trim();
     if (!an && bn) return 1;
     if (an && !bn) return -1;
@@ -637,47 +658,62 @@ function renderAccounts(records) {
   });
   $('accounts-count').textContent = rows.length;
   if (rows.length === 0) { showState('accounts', 'empty'); return; }
-  $('accounts-body').innerHTML = rows.map(r => `<tr>
-    <td><strong>${esc(r.name||'—')}</strong></td>
-    <td class="muted">${esc(r.address1_city||'—')}</td>
-    <td class="muted">${esc(r.telephone1||'—')}</td>
-    <td class="muted">${esc(r.emailaddress1||'—')}</td>
-  </tr>`).join('');
+  accountsRowMap = {};
+  $('accounts-body').innerHTML = rows.map((r, i) => {
+    accountsRowMap[i] = r;
+    return `<tr data-idx="${i}" class="row-clickable">
+      <td><strong>${esc(r.name||'—')}</strong></td>
+      <td class="muted">${esc(r.address1_city||'—')}</td>
+      <td class="muted">${esc(r.telephone1||'—')}</td>
+      <td class="muted">${esc(r.emailaddress1||'—')}</td>
+    </tr>`;
+  }).join('');
+  $('accounts-body').querySelectorAll('tr[data-idx]').forEach(tr => {
+    tr.addEventListener('click', () => openAccountDetail(accountsRowMap[+tr.dataset.idx]));
+  });
   showState('accounts', 'table');
 }
 
 $('accounts-search').addEventListener('input', e => {
   accountsSearch = e.target.value.trim();
-  if (cache.accounts) renderAccounts(cache.accounts);
+  clearTimeout(accountsSearchTimer);
+  accountsSearchTimer = setTimeout(() => {
+    if (accountsSearch) searchAccounts(accountsSearch);
+    else if (cache.accounts) renderAccounts(cache.accounts);
+  }, 300);
 });
 $('accounts-refresh').addEventListener('click', () => loadAccounts(true));
 
 // ── CONTACTS ───────────────────────────────────────────────────────────────
+const CONTACTS_SELECT = 'fullname,emailaddress1,mobilephone,telephone1,jobtitle,_parentcustomerid_value';
 let contactsSearch = '';
+let contactsSearchTimer = null;
 
 async function loadContacts(force = false) {
   if (cache.contacts && !force) { renderContacts(cache.contacts); return; }
   showState('contacts', 'loading');
   try {
-    const records = await xrmFetch('contact',
-      '?$select=fullname,emailaddress1,mobilephone,telephone1,jobtitle,_parentcustomerid_value&$orderby=fullname asc&$top=5000'
+    const page = await xrmFetchPage('contact',
+      `?$select=${CONTACTS_SELECT}&$orderby=fullname asc&$top=500`
     );
-    cache.contacts = records;
-    renderContacts(records);
+    cache.contacts = page.entities;
+    renderContacts(cache.contacts);
   } catch (e) { showState('contacts', 'empty'); console.error('Contacts error:', e); }
 }
 
-function renderContacts(records) {
-  let rows = records;
-  if (contactsSearch) {
-    const q = contactsSearch.toLowerCase();
-    rows = records.filter(r =>
-      (r.fullname||'').toLowerCase().includes(q) ||
-      (r.emailaddress1||'').toLowerCase().includes(q) ||
-      (r.jobtitle||'').toLowerCase().includes(q)
+async function searchContacts(q) {
+  showState('contacts', 'loading');
+  try {
+    const safe = q.replace(/'/g, "''");
+    const records = await xrmFetch('contact',
+      `?$select=${CONTACTS_SELECT}&$filter=contains(fullname,'${safe}')&$orderby=fullname asc&$top=500`
     );
-  }
-  rows = [...rows].sort((a, b) => {
+    renderContacts(records);
+  } catch (e) { showState('contacts', 'empty'); console.error('Contacts search error:', e); }
+}
+
+function renderContacts(records) {
+  let rows = [...records].sort((a, b) => {
     const an = (a.fullname || '').trim(), bn = (b.fullname || '').trim();
     if (!an && bn) return 1;
     if (an && !bn) return -1;
@@ -700,7 +736,11 @@ function renderContacts(records) {
 
 $('contacts-search').addEventListener('input', e => {
   contactsSearch = e.target.value.trim();
-  if (cache.contacts) renderContacts(cache.contacts);
+  clearTimeout(contactsSearchTimer);
+  contactsSearchTimer = setTimeout(() => {
+    if (contactsSearch) searchContacts(contactsSearch);
+    else if (cache.contacts) renderContacts(cache.contacts);
+  }, 300);
 });
 $('contacts-refresh').addEventListener('click', () => loadContacts(true));
 
@@ -718,6 +758,79 @@ function showState(tab, state) {
   else if (state === 'table') table?.classList.remove('hidden');
   else if (state === 'grid')  grid?.classList.remove('hidden');
 }
+
+// ── Account detail modal ──────────────────────────────────────────────────
+async function openAccountDetail(row) {
+  const accountId = row?.accountid;
+  if (!accountId) return;
+  const modal = $('account-modal');
+  const body  = $('account-modal-body');
+  body.innerHTML = '<div class="loading-state"><div class="spinner"></div></div>';
+  modal.classList.remove('hidden');
+
+  try {
+    const [accounts, contacts, workOrders] = await Promise.all([
+      xrmFetch('account',
+        `?$select=name,emailaddress1,telephone1,address1_line1,address1_city,address1_stateorprovince,address1_postalcode,websiteurl,description&$filter=accountid eq ${accountId}`
+      ),
+      xrmFetch('contact',
+        `?$select=contactid,fullname,emailaddress1,mobilephone,telephone1,jobtitle&$filter=_parentcustomerid_value eq ${accountId}&$orderby=fullname asc`
+      ),
+      xrmFetch('msdyn_workorder',
+        `?$select=msdyn_workorderid,msdyn_name,msdyn_systemstatus,createdon&$filter=_msdyn_serviceaccount_value eq ${accountId}&$orderby=createdon desc&$top=10`
+      ).catch(() => [])
+    ]);
+
+    const a = accounts[0];
+    if (!a) { body.innerHTML = '<div class="am-empty">Account not found.</div>'; return; }
+
+    const address = [a.address1_line1, a.address1_city, a.address1_stateorprovince, a.address1_postalcode]
+      .filter(Boolean).join(', ');
+
+    body.innerHTML = `
+      <div class="am-title">${esc(a.name || '—')}</div>
+      <div class="am-sub">${esc(address || 'No address on file')}</div>
+
+      <div class="am-grid">
+        <div><div class="am-field-label">Phone</div><div class="am-field-value">${esc(a.telephone1||'—')}</div></div>
+        <div><div class="am-field-label">Email</div><div class="am-field-value">${esc(a.emailaddress1||'—')}</div></div>
+        <div><div class="am-field-label">Website</div><div class="am-field-value">${esc(a.websiteurl||'—')}</div></div>
+      </div>
+
+      <div class="am-section-title">Contacts (${contacts.length})</div>
+      <div class="am-list">
+        ${contacts.length ? contacts.map(c => `
+          <div class="am-list-item am-clickable" data-contact-id="${esc(c.contactid)}">
+            <div class="am-list-item-title">${esc(c.fullname||'—')}</div>
+            <div class="am-list-item-sub">${esc(c.jobtitle || '')}${c.jobtitle && (c.mobilephone||c.telephone1||c.emailaddress1) ? ' · ' : ''}${esc(c.mobilephone||c.telephone1||'')}${(c.mobilephone||c.telephone1) && c.emailaddress1 ? ' · ' : ''}${esc(c.emailaddress1||'')}</div>
+          </div>`).join('') : '<div class="am-empty">No contacts on file.</div>'}
+      </div>
+
+      <div class="am-section-title">Recent Work Orders</div>
+      <div class="am-list">
+        ${workOrders.length ? workOrders.map(w => `
+          <div class="am-list-item am-clickable" data-wo-id="${esc(w.msdyn_workorderid)}">
+            <div class="am-list-item-title">${esc(w.msdyn_name||'—')}</div>
+            <div class="am-list-item-sub">${esc(w['msdyn_systemstatus@OData.Community.Display.V1.FormattedValue']||'')}${fmtDate(w.createdon) !== '—' ? ' · ' + fmtDate(w.createdon) : ''}</div>
+          </div>`).join('') : '<div class="am-empty">No work orders on file.</div>'}
+      </div>
+    `;
+
+    body.querySelectorAll('[data-contact-id]').forEach(el => {
+      el.addEventListener('click', () => window.api.openContact(el.dataset.contactId, orgUrl, 'Contact'));
+    });
+    body.querySelectorAll('[data-wo-id]').forEach(el => {
+      el.addEventListener('click', () => window.api.openWorkOrderDirect(el.dataset.woId, orgUrl, 'Work Order'));
+    });
+  } catch (e) {
+    body.innerHTML = '<div class="am-empty">Failed to load account details.</div>';
+    console.error('Account detail error:', e);
+  }
+}
+
+$('account-modal-close').addEventListener('click', () => $('account-modal').classList.add('hidden'));
+$('account-modal').addEventListener('click', e => { if (e.target.id === 'account-modal') $('account-modal').classList.add('hidden'); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') $('account-modal').classList.add('hidden'); });
 
 // ── Schedule tooltip ──────────────────────────────────────────────────────
 const schedTip = $('sched-tooltip');

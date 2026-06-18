@@ -448,3 +448,49 @@ tr.date-group-row:hover { background: transparent !important; }
 #sched-tooltip .tt-wo      { font-size: 11px; font-weight: 600; color: var(--accent); margin-bottom: 4px; }
 #sched-tooltip .tt-status  { font-size: 11px; color: var(--muted2); margin-bottom: 4px; }
 #sched-tooltip .tt-problem { font-size: 12px; color: var(--text); line-height: 1.4; }
+
+/* ── Account detail modal ───────────────────────────────────────────────── */
+.row-clickable { cursor: pointer; }
+.row-clickable:hover { background: var(--bg3); }
+
+#account-modal {
+  position: fixed; inset: 0; z-index: 300;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,.55);
+}
+#account-modal-card {
+  position: relative;
+  width: 520px; max-height: 80vh; overflow-y: auto;
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 16px; padding: 28px;
+  box-shadow: 0 24px 80px rgba(0,0,0,.6);
+}
+#account-modal-close {
+  position: absolute; top: 16px; right: 16px;
+  width: 26px; height: 26px; border-radius: 8px;
+  background: var(--bg3); border: 1px solid var(--border);
+  color: var(--muted2); display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+}
+#account-modal-close:hover { color: var(--text); }
+#account-modal-close svg { width: 10px; height: 10px; }
+
+.am-title { font-size: 19px; font-weight: 700; letter-spacing: -.2px; margin-bottom: 4px; }
+.am-sub   { font-size: 12px; color: var(--muted2); margin-bottom: 20px; }
+.am-section-title {
+  font-size: 11px; font-weight: 700; color: var(--muted2);
+  text-transform: uppercase; letter-spacing: .5px; margin: 20px 0 10px;
+}
+.am-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 20px; }
+.am-field-label { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+.am-field-value { font-size: 13px; color: var(--text); }
+.am-list { display: flex; flex-direction: column; gap: 8px; }
+.am-list-item {
+  background: var(--bg3); border: 1px solid var(--border);
+  border-radius: 10px; padding: 10px 12px;
+}
+.am-list-item.am-clickable { cursor: pointer; transition: border-color .12s; }
+.am-list-item.am-clickable:hover { border-color: var(--accent); }
+.am-list-item-title { font-size: 13px; font-weight: 600; }
+.am-list-item-sub    { font-size: 11px; color: var(--muted2); margin-top: 2px; }
+.am-empty { font-size: 12px; color: var(--muted); }
