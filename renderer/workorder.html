@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <title>Booking</title>
+  <style>
+    :root {
+      --bg:#0d0f14; --bg2:#13161e; --bg3:#1a1f2e;
+      --accent:#7c6af7; --text:#e8eaf2; --muted:#6b7280; --muted2:#8892a4;
+      --border:#252b3b; --danger:#ef4444;
+      --green:#12b76a; --yellow:#f7be09; --blue:#5bb7f7; --red:#ef4444;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100vh; overflow: hidden; }
+    body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 13px; display: flex; flex-direction: column; }
+
+    /* ── Titlebar ── */
+    #titlebar { height: 42px; display: flex; align-items: center; padding: 0 16px; gap: 10px; flex-shrink: 0; border-bottom: 1px solid var(--border); background: var(--bg2); -webkit-app-region: drag; }
+    #win-controls { display: flex; gap: 6px; -webkit-app-region: no-drag; }
+    .wc-btn { width: 12px; height: 12px; border-radius: 50%; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 0; }
+    .wc-btn svg { width: 6px; height: 6px; opacity: 0; transition: opacity .1s; }
+    #win-controls:hover .wc-btn svg { opacity: .8; }
+    .wc-close { background: #ff5f57; } .wc-min { background: #febc2e; } .wc-max { background: #28c840; }
+    #titlebar-label { font-size: 13px; font-weight: 600; color: var(--muted2); flex: 1; text-align: center; pointer-events: none; }
+    #header-actions { display: flex; gap: 8px; -webkit-app-region: no-drag; }
+
+    /* ── Buttons ── */
+    .btn { padding: 6px 14px; border-radius: 8px; border: none; font-size: 12px; font-weight: 600; cursor: pointer; transition: opacity .15s; font-family: inherit; }
+    .btn:hover { opacity: .85; } .btn:disabled { opacity: .4; cursor: not-allowed; }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-ghost   { background: transparent; color: var(--muted2); border: 1px solid var(--border); }
+    .btn-sm      { padding: 4px 10px; font-size: 11px; }
+    .btn-danger  { background: var(--danger); color: #fff; }
+
+    /* ── WO Header ── */
+    #wo-header { padding: 16px 20px; border-bottom: 1px solid var(--border); background: var(--bg2); flex-shrink: 0; }
+    #wo-header-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+    #wo-number   { font-size: 20px; font-weight: 700; line-height: 1.2; }
+    #wo-account  { font-size: 13px; color: var(--muted2); margin-top: 3px; }
+    #wo-booking-ref { font-size: 11px; color: var(--muted); margin-top: 2px; }
+    #wo-status-row { display: flex; align-items: center; gap: 10px; margin-top: 0; flex-shrink: 0; }
+    .status-badge { display: inline-flex; align-items: center; padding: 4px 12px; border-radius: 20px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; }
+    .badge-scheduled  { background: rgba(91,183,247,.15);  color: var(--blue); }
+    .badge-inprogress { background: rgba(18,183,106,.15);  color: var(--green); }
+    .badge-completed  { background: rgba(122,131,154,.15); color: #7a839a; }
+    .badge-traveling  { background: rgba(247,190,9,.15);   color: var(--yellow); }
+    .badge-canceled   { background: rgba(239,68,68,.12);   color: var(--red); }
+    .badge-default    { background: rgba(108,117,125,.15); color: var(--muted2); }
+
+    /* ── Tabs ── */
+    #wo-tabs { display: flex; gap: 0; padding: 0 20px; border-bottom: 1px solid var(--border); background: var(--bg2); flex-shrink: 0; }
+    .wo-tab { background: none; border: none; border-bottom: 2px solid transparent; color: var(--muted2); font-size: 13px; font-weight: 500; padding: 10px 16px; cursor: pointer; margin-bottom: -1px; transition: color .15s; font-family: inherit; }
+    .wo-tab:hover { color: var(--text); }
+    .wo-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+    /* ── Content area ── */
+    #main-area  { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+    #wo-loading { flex: 1; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 12px; color: var(--muted2); }
+    #wo-content { flex: 1; min-height: 0; display: none; flex-direction: column; }
+    #wo-panels  { flex: 1; min-height: 0; position: relative; }
+    .wo-panel   { position: absolute; inset: 0; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 14px; }
+
+    /* ── Cards / sections ── */
+    .card { background: var(--bg2); border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px; }
+    .card-title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .7px; color: var(--muted); margin-bottom: 14px; }
+    .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .field-grid.cols-3 { grid-template-columns: 1fr 1fr 1fr; }
+    .field-grid.cols-1 { grid-template-columns: 1fr; }
+    .field-item { display: flex; flex-direction: column; gap: 5px; }
+    .field-item.span-2 { grid-column: 1 / -1; }
+    .field-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .3px; color: var(--muted); }
+    .field-value { font-size: 13px; color: var(--text); min-height: 20px; }
+    .field-value.dim { color: var(--muted2); }
+
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+
+    /* ── Inputs ── */
+    .field-input { background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 13px; padding: 7px 10px; width: 100%; outline: none; transition: border-color .15s; font-family: inherit; }
+    .field-input:focus { border-color: var(--accent); }
+    textarea.field-input { min-height: 90px; resize: vertical; line-height: 1.5; }
+    select.field-input { cursor: pointer; appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpath d='M5 7l5 5 5-5' stroke='%236b7280' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 8px center; background-size: 16px; padding-right: 28px; }
+    input[type="datetime-local"].field-input::-webkit-calendar-picker-indicator { filter: invert(.6); cursor: pointer; }
+
+    /* ── Tables ── */
+    .table-wrap { background: var(--bg2); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+    .data-table  { width: 100%; border-collapse: collapse; }
+    .data-table th { background: var(--bg3); padding: 10px 14px; text-align: left; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); border-bottom: 1px solid var(--border); }
+    .data-table td { padding: 11px 14px; border-bottom: 1px solid var(--border); font-size: 13px; vertical-align: middle; }
+    .data-table tbody tr:last-child td { border-bottom: none; }
+    .data-table tbody tr:hover td { background: rgba(255,255,255,.02); }
+    .col-muted { color: var(--muted2); }
+
+    /* ── Tasks ── */
+    .task-label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+    .task-cb    { width: 15px; height: 15px; accent-color: var(--accent); flex-shrink: 0; }
+    .task-done td { opacity: .5; }
+    .task-done .task-label span { text-decoration: line-through; }
+    .pct-wrap { display: flex; align-items: center; gap: 6px; }
+    .pct-bar  { width: 56px; height: 4px; background: var(--bg3); border-radius: 2px; overflow: hidden; flex-shrink: 0; }
+    .pct-fill { height: 100%; background: var(--accent); border-radius: 2px; }
+    .pct-lbl  { font-size: 11px; color: var(--muted2); }
+
+    /* ── Notes ── */
+    .note-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+    .note-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 6px; }
+    .note-subject { font-weight: 600; }
+    .note-meta    { font-size: 11px; color: var(--muted); white-space: nowrap; }
+    .note-body    { font-size: 13px; color: var(--muted2); line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+
+    /* ── Util ── */
+    .spinner { width: 28px; height: 28px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .inline-loading { display: flex; justify-content: center; padding: 48px; }
+    .empty-msg { text-align: center; padding: 48px; color: var(--muted2); font-size: 13px; }
+    #toast { position: fixed; bottom: 20px; right: 20px; background: var(--bg3); border: 1px solid var(--border); border-radius: 10px; padding: 10px 16px; font-size: 13px; opacity: 0; transform: translateY(6px); transition: opacity .2s, transform .2s; pointer-events: none; z-index: 999; }
+    #toast.show { opacity: 1; transform: none; }
+    #toast.err  { border-color: var(--danger); color: var(--danger); }
+    ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: transparent; } ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    .hidden { display: none !important; }
+    #product-results { position: relative; z-index: 50; }
+    .prod-option { padding: 8px 12px; cursor: pointer; font-size: 13px; border-bottom: 1px solid var(--border); }
+    .prod-option:last-child { border-bottom: none; }
+    .prod-option:hover { background: var(--bg3); }
+  </style>
+</head>
+<body>
+
+<!-- Hidden webview for Xrm API calls -->
+<webview id="api-wv" partition="persist:dynamics" style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;"></webview>
+
+<!-- Titlebar -->
+<div id="titlebar">
+  <div id="win-controls">
+    <button class="wc-btn wc-close" onclick="api.close()"><svg viewBox="0 0 10 10"><path d="M1 1l8 8M9 1L1 9" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button>
+    <button class="wc-btn wc-min"   onclick="api.minimize()"><svg viewBox="0 0 10 10"><path d="M1 5h8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button>
+    <button class="wc-btn wc-max"   onclick="api.maximize()"><svg viewBox="0 0 10 10"><rect x="1.5" y="1.5" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.3" fill="none"/></svg></button>
+  </div>
+  <span id="titlebar-label">Booking</span>
+  <div id="header-actions">
+    <button class="btn btn-ghost btn-sm hidden" id="discard-btn">Discard</button>
+    <button class="btn btn-primary btn-sm hidden" id="save-btn">Save</button>
+  </div>
+</div>
+
+<div id="main-area">
+
+  <!-- Loading state -->
+  <div id="wo-loading">
+    <div class="spinner"></div>
+    <span>Loading booking…</span>
+  </div>
+
+  <!-- Loaded content -->
+  <div id="wo-content">
+
+    <!-- Record header -->
+    <div id="wo-header">
+      <div id="wo-header-top">
+        <div>
+          <div id="wo-number">—</div>
+          <div id="wo-account"></div>
+          <div id="wo-booking-ref"></div>
+        </div>
+        <div id="wo-status-row">
+          <select id="f-booking-status" class="field-input" style="width:180px;"></select>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tabs -->
+    <div id="wo-tabs">
+      <button class="wo-tab active" data-tab="general">General</button>
+      <button class="wo-tab" data-tab="details">Details</button>
+      <button class="wo-tab" data-tab="tasks">Service Tasks</button>
+      <button class="wo-tab" data-tab="products">Products</button>
+      <button class="wo-tab" data-tab="notes">Notes</button>
+      <div style="flex:1;"></div>
+      <button class="wo-tab" id="open-dynamics-btn" style="color:var(--accent);">↗ Open in Dynamics</button>
+    </div>
+
+    <div id="wo-panels">
+
+      <!-- ── General ── -->
+      <div id="panel-general" class="wo-panel">
+        <div class="two-col">
+
+          <!-- Booking -->
+          <div class="card">
+            <div class="card-title">Booking</div>
+            <div class="field-grid">
+              <div class="field-item">
+                <label class="field-label" for="f-start">Start Time</label>
+                <input id="f-start" type="datetime-local" class="field-input"/>
+              </div>
+              <div class="field-item">
+                <label class="field-label" for="f-end">End Time</label>
+                <input id="f-end" type="datetime-local" class="field-input"/>
+              </div>
+              <div class="field-item span-2">
+                <label class="field-label" for="f-arrival">Actual Arrival Time</label>
+                <input id="f-arrival" type="datetime-local" class="field-input"/>
+              </div>
+              <div class="field-item">
+                <label class="field-label" for="f-resource">Resource</label>
+                <select id="f-resource" class="field-input"></select>
+              </div>
+              <div class="field-item">
+                <span class="field-label">Duration</span>
+                <span class="field-value dim" id="d-duration">—</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Work Order -->
+          <div class="card">
+            <div class="card-title">Work Order</div>
+            <div class="field-grid">
+              <div class="field-item">
+                <span class="field-label">System Status</span>
+                <span class="field-value" id="d-wo-status">—</span>
+              </div>
+              <div class="field-item">
+                <span class="field-label">Sub-Status</span>
+                <span class="field-value dim" id="d-substatus">—</span>
+              </div>
+              <div class="field-item">
+                <span class="field-label">Type</span>
+                <span class="field-value dim" id="d-type">—</span>
+              </div>
+              <div class="field-item">
+                <span class="field-label">Priority</span>
+                <span class="field-value dim" id="d-priority">—</span>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Summary & Instructions -->
+        <div class="card">
+          <div class="card-title">Notes</div>
+          <div class="field-grid">
+            <div class="field-item">
+              <label class="field-label" for="f-summary">Summary</label>
+              <textarea id="f-summary" class="field-input" placeholder="Work order summary…"></textarea>
+            </div>
+            <div class="field-item">
+              <label class="field-label" for="f-instructions">Instructions</label>
+              <textarea id="f-instructions" class="field-input" placeholder="Instructions…"></textarea>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Details ── -->
+      <div id="panel-details" class="wo-panel hidden">
+        <div class="two-col">
+
+          <!-- Accounts -->
+          <div class="card">
+            <div class="card-title">Accounts</div>
+            <div class="field-grid cols-1">
+              <div class="field-item">
+                <span class="field-label">Service Account</span>
+                <span class="field-value" id="d-account">—</span>
+              </div>
+              <div class="field-item">
+                <span class="field-label">Billing Account</span>
+                <span class="field-value dim" id="d-billing">—</span>
+              </div>
+              <div class="field-item">
+                <span class="field-label">Service Territory</span>
+                <span class="field-value dim" id="d-territory">—</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Contact -->
+          <div class="card">
+            <div class="card-title">Contact</div>
+            <div class="field-grid cols-1">
+              <div class="field-item">
+                <span class="field-label">Name</span>
+                <span class="field-value" id="d-contact-name">—</span>
+              </div>
+              <div class="field-item">
+                <span class="field-label">Title</span>
+                <span class="field-value dim" id="d-contact-title"></span>
+              </div>
+              <div class="field-item">
+                <span class="field-label">Phone</span>
+                <span class="field-value dim" id="d-contact-phone">—</span>
+              </div>
+              <div class="field-item">
+                <span class="field-label">Email</span>
+                <span class="field-value dim" id="d-contact-email">—</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Problem Description -->
+          <div class="card">
+            <div class="card-title">Description</div>
+            <div class="field-grid cols-1">
+              <div class="field-item">
+                <label class="field-label" for="f-problem">Problem Description</label>
+                <textarea id="f-problem" class="field-input" style="min-height:120px;" placeholder="Problem description…"></textarea>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Address -->
+        <div class="card">
+          <div class="card-title">Address</div>
+          <div class="field-grid">
+            <div class="field-item span-2">
+              <label class="field-label" for="f-addr1">Street 1</label>
+              <input id="f-addr1" class="field-input" type="text" placeholder="Street address"/>
+            </div>
+            <div class="field-item span-2">
+              <label class="field-label" for="f-addr2">Street 2</label>
+              <input id="f-addr2" class="field-input" type="text" placeholder="Suite, unit, etc."/>
+            </div>
+            <div class="field-item">
+              <label class="field-label" for="f-city">City</label>
+              <input id="f-city" class="field-input" type="text"/>
+            </div>
+            <div class="field-item">
+              <label class="field-label" for="f-state">State / Province</label>
+              <input id="f-state" class="field-input" type="text"/>
+            </div>
+            <div class="field-item">
+              <label class="field-label" for="f-zip">ZIP / Postal Code</label>
+              <input id="f-zip" class="field-input" type="text"/>
+            </div>
+            <div class="field-item">
+              <label class="field-label" for="f-country">Country</label>
+              <input id="f-country" class="field-input" type="text"/>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Service Tasks ── -->
+      <div id="panel-tasks" class="wo-panel hidden">
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead><tr><th>Task</th><th>Type</th><th>Progress</th><th>Est. Duration</th><th>Description</th></tr></thead>
+            <tbody id="tasks-body"><tr><td colspan="5"><div class="inline-loading"><div class="spinner"></div></div></td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- ── Products ── -->
+      <div id="panel-products" class="wo-panel hidden">
+        <div class="card">
+          <div class="card-title">Add Parts Request</div>
+          <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+            <div style="flex:1;min-width:200px;display:flex;flex-direction:column;gap:5px;">
+              <span class="field-label">Search Product</span>
+              <input id="product-search" class="field-input" type="text" placeholder="Type product name…" autocomplete="off"/>
+              <div id="product-results" style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;overflow:hidden;display:none;"></div>
+              <div id="product-selected" style="font-size:12px;color:var(--accent);display:none;"></div>
+            </div>
+            <div style="width:90px;display:flex;flex-direction:column;gap:5px;">
+              <span class="field-label">Quantity</span>
+              <input id="product-qty" class="field-input" type="number" value="1" min="0.01" step="any"/>
+            </div>
+            <button class="btn btn-primary btn-sm" id="add-product-btn" disabled>Add</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead><tr><th>Product / Service</th><th>Qty</th><th>Unit</th><th>Status</th></tr></thead>
+            <tbody id="products-body"><tr><td colspan="4"><div class="inline-loading"><div class="spinner"></div></div></td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- ── Notes ── -->
+      <div id="panel-notes" class="wo-panel hidden">
+        <div class="card">
+          <div class="card-title">Add Note</div>
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            <input id="note-subject" class="field-input" type="text" placeholder="Subject (optional)"/>
+            <textarea id="note-text" class="field-input" style="min-height:80px;" placeholder="Note text…"></textarea>
+            <div style="display:flex;justify-content:flex-end;">
+              <button class="btn btn-primary btn-sm" id="add-note-btn">Add Note</button>
+            </div>
+          </div>
+        </div>
+        <div id="notes-list" style="display:flex;flex-direction:column;gap:10px;"></div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+<script src="workorder.js"></script>
+</body>
+</html>
