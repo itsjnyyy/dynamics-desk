@@ -5,9 +5,9 @@
   <title>Booking</title>
   <style>
     :root {
-      --bg:#0d0f14; --bg2:#13161e; --bg3:#1a1f2e;
-      --accent:#7c6af7; --text:#e8eaf2; --muted:#6b7280; --muted2:#8892a4;
-      --border:#252b3b; --danger:#ef4444;
+      --bg:#3c3f46; --bg2:#45484f; --bg3:#4f535b;
+      --accent:#6cc0f5; --text:#f1f3f6; --muted:#9aa0ab; --muted2:#c4c9d2;
+      --border:#5b5f68; --danger:#ef4444;
       --green:#12b76a; --yellow:#f7be09; --blue:#5bb7f7; --red:#ef4444;
     }
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -15,12 +15,12 @@
     body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 13px; display: flex; flex-direction: column; }
 
     /* ── Titlebar ── */
-    #titlebar { height: 42px; display: flex; align-items: center; padding: 0 16px; gap: 10px; flex-shrink: 0; border-bottom: 1px solid var(--border); background: var(--bg2); -webkit-app-region: drag; }
-    #win-controls { display: flex; gap: 6px; -webkit-app-region: no-drag; }
-    .wc-btn { width: 12px; height: 12px; border-radius: 50%; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 0; }
-    .wc-btn svg { width: 6px; height: 6px; opacity: 0; transition: opacity .1s; }
-    #win-controls:hover .wc-btn svg { opacity: .8; }
-    .wc-close { background: #ff5f57; } .wc-min { background: #febc2e; } .wc-max { background: #28c840; }
+    #titlebar { height: 42px; display: flex; align-items: center; padding: 0 0 0 16px; gap: 10px; flex-shrink: 0; border-bottom: 1px solid var(--border); background: var(--bg2); -webkit-app-region: drag; }
+    #win-controls { display: flex; height: 100%; align-self: stretch; -webkit-app-region: no-drag; }
+    .wc-btn { width: 46px; height: 100%; border-radius: 0; border: none; background: transparent; color: var(--muted2); cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 0; transition: background .12s, color .12s; }
+    .wc-btn svg { width: 10px; height: 10px; }
+    .wc-btn:hover { background: rgba(255,255,255,.08); color: var(--text); }
+    .wc-close:hover { background: #e81123; color: #fff; }
     #titlebar-label { font-size: 13px; font-weight: 600; color: var(--muted2); flex: 1; text-align: center; pointer-events: none; }
     #header-actions { display: flex; gap: 8px; -webkit-app-region: no-drag; }
 
@@ -130,15 +130,16 @@
 
 <!-- Titlebar -->
 <div id="titlebar">
-  <div id="win-controls">
-    <button class="wc-btn wc-close" onclick="api.close()"><svg viewBox="0 0 10 10"><path d="M1 1l8 8M9 1L1 9" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button>
-    <button class="wc-btn wc-min"   onclick="api.minimize()"><svg viewBox="0 0 10 10"><path d="M1 5h8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button>
-    <button class="wc-btn wc-max"   onclick="api.maximize()"><svg viewBox="0 0 10 10"><rect x="1.5" y="1.5" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.3" fill="none"/></svg></button>
-  </div>
   <span id="titlebar-label">Booking</span>
   <div id="header-actions">
+    <button class="btn btn-ghost btn-sm" id="refresh-btn">Refresh</button>
     <button class="btn btn-ghost btn-sm hidden" id="discard-btn">Discard</button>
     <button class="btn btn-primary btn-sm hidden" id="save-btn">Save</button>
+  </div>
+  <div id="win-controls">
+    <button class="wc-btn wc-min"   onclick="api.minimize()"><svg viewBox="0 0 10 10"><path d="M1 5h8" stroke="currentColor" stroke-width="1" stroke-linecap="round"/></svg></button>
+    <button class="wc-btn wc-max"   onclick="api.maximize()"><svg viewBox="0 0 10 10"><rect x="1.5" y="1.5" width="7" height="7" stroke="currentColor" stroke-width="1" fill="none"/></svg></button>
+    <button class="wc-btn wc-close" onclick="api.close()"><svg viewBox="0 0 10 10"><path d="M1 1l8 8M9 1L1 9" stroke="currentColor" stroke-width="1" stroke-linecap="round"/></svg></button>
   </div>
 </div>
 
@@ -220,8 +221,8 @@
                 <span class="field-value" id="d-wo-status">—</span>
               </div>
               <div class="field-item">
-                <span class="field-label">Sub-Status</span>
-                <span class="field-value dim" id="d-substatus">—</span>
+                <label class="field-label" for="f-substatus">Sub-Status</label>
+                <select id="f-substatus" class="field-input"></select>
               </div>
               <div class="field-item">
                 <span class="field-label">Type</span>
@@ -239,12 +240,12 @@
         <!-- Summary & Instructions -->
         <div class="card">
           <div class="card-title">Notes</div>
-          <div class="field-grid">
+          <div class="field-grid cols-1">
             <div class="field-item">
               <label class="field-label" for="f-summary">Summary</label>
-              <textarea id="f-summary" class="field-input" placeholder="Work order summary…"></textarea>
+              <textarea id="f-summary" class="field-input" style="min-height:160px;" placeholder="Work order summary…"></textarea>
             </div>
-            <div class="field-item">
+            <div class="field-item hidden">
               <label class="field-label" for="f-instructions">Instructions</label>
               <textarea id="f-instructions" class="field-input" placeholder="Instructions…"></textarea>
             </div>
@@ -271,6 +272,18 @@
               <div class="field-item">
                 <span class="field-label">Service Territory</span>
                 <span class="field-value dim" id="d-territory">—</span>
+              </div>
+              <div class="field-item">
+                <span class="field-label">Customer Asset</span>
+                <span class="field-value dim" id="d-asset-tag">—</span>
+              </div>
+              <div class="field-item">
+                <span class="field-label">Customer Asset Tag</span>
+                <span class="field-value dim" id="d-asset-tagnum">—</span>
+              </div>
+              <div class="field-item">
+                <span class="field-label">Serial/Lot No.</span>
+                <span class="field-value dim" id="d-asset-serial">—</span>
               </div>
             </div>
           </div>
@@ -307,6 +320,12 @@
                 <textarea id="f-problem" class="field-input" style="min-height:120px;" placeholder="Problem description…"></textarea>
               </div>
             </div>
+          </div>
+
+          <!-- Assigned Engineers -->
+          <div class="card">
+            <div class="card-title">Field Service Engineers</div>
+            <div id="d-engineers-list" style="display:flex;flex-direction:column;gap:8px;"></div>
           </div>
 
         </div>

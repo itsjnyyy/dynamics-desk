@@ -58,6 +58,17 @@ async function xrmList(entity, qs) {
   if (!Array.isArray(r)) throw new Error(r?.__err||'Unknown error');
   return r;
 }
+async function getLookupNavProperty(entityLogicalName, lookupLogicalName) {
+  const url = `${orgUrl}/api/data/v9.2/EntityDefinitions(LogicalName='${entityLogicalName}')/ManyToOneRelationships?$filter=ReferencingAttribute eq '${lookupLogicalName}'&$select=ReferencingEntityNavigationPropertyName`;
+  const json = await apiWv.executeJavaScript(
+    `fetch(${JSON.stringify(url)}, {headers:{Accept:'application/json'}}).then(r=>r.json()).then(d=>JSON.stringify(d)).catch(e=>JSON.stringify({__err:e.message}))`
+  );
+  const r = JSON.parse(json);
+  if (r?.__err) throw new Error(r.__err);
+  const name = r.value?.[0]?.ReferencingEntityNavigationPropertyName;
+  if (!name) throw new Error(`Could not resolve navigation property for ${lookupLogicalName}`);
+  return name;
+}
 async function xrmUpdate(entity, id, data) {
   await apiWv.executeJavaScript(`window.__xd=${JSON.stringify(data)}`);
   const r = JSON.parse(await apiWv.executeJavaScript(
@@ -75,59 +86,110 @@ async function xrmCreate(entity, data) {
 }
 
 // ── State ─────────────────────────────────────────────────────────────────────
-let booking = null, wo = null, woId = null, incident = null, contact = null, bookingStatuses = [], resources = [], dirty = {};
+let booking = null, wo = null, woId = null, incident = null, contact = null, customerAsset = null, bookingStatuses = [], resources = [], subStatuses = [], dirty = {}, substatusNavProp = null;
 let tasksLoaded = false, productsLoaded = false, notesLoaded = false, prodSearchInited = false;
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
+async function loadData() {
+  if (directWoId) {
+    woId = directWoId;
+    bookingStatuses = [];
+    resources = [];
+    $('booking-card').classList.add('hidden');
+    $('wo-status-row').classList.add('hidden');
+  } else {
+    [booking, bookingStatuses, resources] = await Promise.all([
+      xrmGet('bookableresourcebooking', bookingId, ''),
+      xrmList('bookingstatus', '?$select=bookingstatusid,name,statuscode&$orderby=name asc'),
+      xrmList('bookableresource', '?$select=bookableresourceid,name&$orderby=name asc'),
+    ]);
+    woId = booking._msdyn_workorder_value;
+  }
+
+  if (woId) {
+    wo = await xrmGet('msdyn_workorder', woId,
+      '?$select=msdyn_name,msdyn_systemstatus,msdyn_workordersummary,msdyn_instructions,' +
+      'msdyn_address1,msdyn_address2,msdyn_city,msdyn_stateorprovince,msdyn_postalcode,msdyn_country,' +
+      '_msdyn_serviceaccount_value,_msdyn_billingaccount_value,_msdyn_workordertype_value,' +
+      '_msdyn_serviceterritory_value,_msdyn_substatus_value,_msdyn_priority_value,_msdyn_customerasset_value,' +
+      'msdyn_datewindowstart,msdyn_datewindowend,msdyn_timetopromised,msdyn_timefrompromised,' +
+      'wc_workorderproblemdescription,_msdyn_reportedbycontact_value');
+    const contactId = wo._msdyn_reportedbycontact_value;
+    contact = null;
+    if (contactId) {
+      try {
+        contact = await xrmGet('contact', contactId,
+          '?$select=fullname,telephone1,mobilephone,emailaddress1,jobtitle');
+      } catch(_) {}
+    }
+
+    const assetId = wo._msdyn_customerasset_value;
+    customerAsset = null;
+    if (assetId) {
+      try {
+        customerAsset = await xrmGet('msdyn_customerasset', assetId,
+          '?$select=msdyn_name,wc_assettag,msdyn_assettag,wc_seriallotnumber');
+        customerAsset.__tag    = customerAsset.wc_assettag || customerAsset.msdyn_assettag;
+        customerAsset.__serial = customerAsset.wc_seriallotnumber;
+      } catch(_) {}
+    }
+
+    const incidents = await xrmList('msdyn_workorderincident',
+      `?$filter=_msdyn_workorder_value eq ${woId}&$top=1`);
+    incident = incidents[0] || null;
+
+    try {
+      subStatuses = await xrmList('msdyn_workordersubstatus',
+        '?$select=msdyn_workordersubstatusid,msdyn_name&$orderby=msdyn_name asc');
+    } catch(_) { subStatuses = []; }
+
+    try {
+      await loadEngineers();
+    } catch(_) {}
+  }
+}
+
 async function init() {
   try {
     await waitForXrm();
-
-    if (directWoId) {
-      woId = directWoId;
-      bookingStatuses = [];
-      resources = [];
-      $('booking-card').classList.add('hidden');
-      $('wo-status-row').classList.add('hidden');
-    } else {
-      [booking, bookingStatuses, resources] = await Promise.all([
-        xrmGet('bookableresourcebooking', bookingId, ''),
-        xrmList('bookingstatus', '?$select=bookingstatusid,name,statuscode&$orderby=name asc'),
-        xrmList('bookableresource', '?$select=bookableresourceid,name&$orderby=name asc'),
-      ]);
-      woId = booking._msdyn_workorder_value;
-    }
-
-    if (woId) {
-      wo = await xrmGet('msdyn_workorder', woId,
-        '?$select=msdyn_name,msdyn_systemstatus,msdyn_workordersummary,msdyn_instructions,' +
-        'msdyn_address1,msdyn_address2,msdyn_city,msdyn_stateorprovince,msdyn_postalcode,msdyn_country,' +
-        '_msdyn_serviceaccount_value,_msdyn_billingaccount_value,_msdyn_workordertype_value,' +
-        '_msdyn_serviceterritory_value,_msdyn_substatus_value,_msdyn_priority_value,' +
-        'msdyn_datewindowstart,msdyn_datewindowend,msdyn_timetopromised,msdyn_timefrompromised,' +
-        'wc_workorderproblemdescription,_msdyn_reportedbycontact_value');
-      const contactId = wo._msdyn_reportedbycontact_value;
-      if (contactId) {
-        try {
-          contact = await xrmGet('contact', contactId,
-            '?$select=fullname,telephone1,mobilephone,emailaddress1,jobtitle');
-        } catch(_) {}
-      }
-      const incidents = await xrmList('msdyn_workorderincident',
-        `?$filter=_msdyn_workorder_value eq ${woId}&$top=1`);
-      incident = incidents[0] || null;
-    }
+    await loadData();
 
     if (booking) { buildStatusDropdown(); buildResourceDropdown(); }
+    if (wo) buildSubstatusDropdown();
     renderAll();
     listenEdits();
     wireOpenDynamics();
+    wireRefresh();
 
     $('wo-loading').style.display = 'none';
     $('wo-content').style.display = 'flex';
   } catch(e) {
     $('wo-loading').innerHTML = `<div style="color:var(--danger);text-align:center;padding:20px;max-width:400px;">${esc(e.message)}</div>`;
   }
+}
+
+function wireRefresh() {
+  $('refresh-btn')?.addEventListener('click', async () => {
+    const btn = $('refresh-btn');
+    btn.disabled = true;
+    const original = btn.textContent;
+    btn.textContent = 'Refreshing…';
+    try {
+      await loadData();
+      dirty = {};
+      if (booking) { buildStatusDropdown(); buildResourceDropdown(); }
+      if (wo) buildSubstatusDropdown();
+      renderAll();
+      $('save-btn').classList.add('hidden');
+      $('discard-btn').classList.add('hidden');
+      toast('Refreshed');
+    } catch(e) {
+      toast('Refresh failed: ' + e.message, true);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = original;
+    }
+  });
 }
 
 function fv(obj, field) {
@@ -143,8 +205,21 @@ function buildResourceDropdown() {
   sel.value = booking._resource_value || '';
 }
 
+const ALLOWED_SUBSTATUSES = ['5 Day Monitoring', 'Completed', 'Unscheduled', 'Follow-up Required', 'Parts Required'];
+
+function buildSubstatusDropdown() {
+  const sel = $('f-substatus');
+  const allowed = ALLOWED_SUBSTATUSES
+    .map(name => subStatuses.find(s => s.msdyn_name?.toLowerCase() === name.toLowerCase()))
+    .filter(Boolean);
+  sel.innerHTML = '<option value="">—</option>' + allowed.map(s =>
+    `<option value="${s.msdyn_workordersubstatusid}">${esc(s.msdyn_name)}</option>`
+  ).join('');
+  sel.value = wo._msdyn_substatus_value || '';
+}
+
 function wireOpenDynamics() {
-  const APP_ID = '5f751dd8-1b58-eb11-bb23-000d3a3b3842';
+  const APP_ID = 'YOUR-MODEL-DRIVEN-APP-ID'; // find this in your app's URL in Dynamics
   const url = woId
     ? `${orgUrl}/main.aspx?appid=${APP_ID}&pagetype=entityrecord&etn=msdyn_workorder&id=${woId}`
     : `${orgUrl}/main.aspx?appid=${APP_ID}&pagetype=entityrecord&etn=bookableresourcebooking&id=${bookingId}`;
@@ -189,7 +264,6 @@ function renderAll() {
   // WO fields
   const WO_STATUS = {690970000:'Unscheduled',690970001:'Scheduled',690970002:'In Progress',690970003:'Completed',690970004:'Posted',690970005:'Canceled'};
   set('d-wo-status', wo ? (WO_STATUS[wo.msdyn_systemstatus] || fv(wo,'msdyn_systemstatus')) : '—');
-  set('d-substatus',  wo ? fv(wo,'_msdyn_substatus_value')      : '—');
   set('d-type',       wo ? fv(wo,'_msdyn_workordertype_value')   : '—');
   set('d-priority',   wo ? fv(wo,'_msdyn_priority_value')        : '—');
   set('d-account',    wo ? fv(wo,'_msdyn_serviceaccount_value')  : '—');
@@ -199,6 +273,9 @@ function renderAll() {
   set('d-contact-title', contact?.jobtitle      || '');
   set('d-billing',    wo ? fv(wo,'_msdyn_billingaccount_value')  : '—');
   set('d-territory',  wo ? fv(wo,'_msdyn_serviceterritory_value'): '—');
+  set('d-asset-tag',     wo ? fv(wo,'_msdyn_customerasset_value') : '—');
+  set('d-asset-tagnum',  customerAsset?.__tag    || '—');
+  set('d-asset-serial',  customerAsset?.__serial || '—');
   set('d-win-start',  fmtDate(wo?.msdyn_datewindowstart));
   set('d-win-end',    fmtDate(wo?.msdyn_datewindowend));
   set('d-time-from',  fmtDate(wo?.msdyn_timefrompromised));
@@ -231,6 +308,7 @@ function listenEdits() {
     }
     showSave();
   });
+  $('f-substatus').addEventListener('change', e => { dirty._substatus = e.target.value; showSave(); });
   $('f-start').addEventListener('input',   e => { dirty._starttime = e.target.value; showSave(); });
   $('f-end').addEventListener('input',     e => { dirty._endtime   = e.target.value; showSave(); });
   $('f-arrival').addEventListener('input', e => { dirty._actualarrival = e.target.value; showSave(); });
@@ -268,6 +346,11 @@ async function save() {
     ].forEach(k => { if (snap[k] !== undefined) wPatch[k] = snap[k]; });
     if (woId && Object.keys(wPatch).length) await xrmUpdate('msdyn_workorder', woId, wPatch);
 
+    if (woId && snap._substatus) {
+      if (!substatusNavProp) substatusNavProp = await getLookupNavProperty('msdyn_workorder', 'msdyn_substatus');
+      await xrmUpdate('msdyn_workorder', woId, { [`${substatusNavProp}@odata.bind`]: `/msdyn_workordersubstatuses(${snap._substatus})` });
+    }
+
 
     // Sync local state
     if (snap._bookingStatus) {
@@ -280,6 +363,7 @@ async function save() {
     if (snap._actualarrival) booking.msdyn_actualarrival = new Date(snap._actualarrival).toISOString();
     if (snap._resource)     booking._resource_value = snap._resource;
     if (wo) Object.assign(wo, wPatch);
+    if (wo && snap._substatus) wo._msdyn_substatus_value = snap._substatus;
 
     dirty = {};
     $('save-btn').classList.add('hidden');
@@ -292,9 +376,39 @@ async function save() {
 function discard() {
   dirty = {};
   if (booking) { buildStatusDropdown(); buildResourceDropdown(); }
+  if (wo) buildSubstatusDropdown();
   renderAll();
   $('save-btn').classList.add('hidden');
   $('discard-btn').classList.add('hidden');
+}
+
+// ── Assigned Engineers ────────────────────────────────────────────────────────
+async function loadEngineers() {
+  const el = $('d-engineers-list');
+  if (!el) return;
+  const bookings = await xrmList('bookableresourcebooking',
+    `?$select=bookableresourcebookingid,name,starttime,endtime&$expand=Resource($select=name)&$filter=_msdyn_workorder_value eq ${woId}&$orderby=starttime asc`);
+
+  if (!bookings.length) { el.innerHTML = `<div class="field-value dim">No engineers assigned</div>`; return; }
+
+  el.innerHTML = bookings.map((b, i) => {
+    const name = b.Resource?.name || 'Unassigned';
+    const time = `${fmtDate(b.starttime)} – ${fmtDate(b.endtime)}`;
+    return `
+      <div class="engineer-row" data-idx="${i}" style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:8px 12px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;">
+        <span style="font-size:13px;">${esc(name)}</span>
+        <span style="font-size:11px;color:var(--muted2);">${esc(time)}</span>
+      </div>`;
+  }).join('');
+
+  el.querySelectorAll('.engineer-row').forEach(row => {
+    row.addEventListener('mouseenter', () => row.style.borderColor = 'var(--accent)');
+    row.addEventListener('mouseleave', () => row.style.borderColor = 'var(--border)');
+    row.addEventListener('click', () => {
+      const b = bookings[+row.dataset.idx];
+      window.api.openWorkOrder(b.bookableresourcebookingid, orgUrl, b.Resource?.name || b.name || 'Booking');
+    });
+  });
 }
 
 // ── Tabs ──────────────────────────────────────────────────────────────────────

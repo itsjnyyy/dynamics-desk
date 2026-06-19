@@ -3,6 +3,7 @@ const path = require('path');
 const Store = require('electron-store');
 
 const store = new Store();
+const APP_ICON = path.join(__dirname, 'assets', 'icon.ico');
 let win;
 
 app.whenReady().then(() => {
@@ -15,6 +16,7 @@ app.whenReady().then(() => {
     backgroundColor: '#0d0f14',
     show: false,
     title: 'Dynamics Desk',
+    icon: APP_ICON,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -40,6 +42,7 @@ ipcMain.handle('open-record', (_, { url, title }) => {
     width: 1280, height: 860, minWidth: 900, minHeight: 600,
     title: title || 'Record',
     backgroundColor: '#0d0f14',
+    icon: APP_ICON,
     show: false,
     webPreferences: { partition: 'persist:dynamics', contextIsolation: true, nodeIntegration: false }
   });
@@ -53,6 +56,7 @@ ipcMain.handle('open-workorder', (_, { workOrderId, orgUrl, title }) => {
     width: 1200, height: 840, minWidth: 900, minHeight: 600,
     frame: false, backgroundColor: '#0d0f14',
     title: title || 'Work Order', show: false,
+    icon: APP_ICON,
     webPreferences: {
       preload: path.join(__dirname, 'preload-workorder.js'),
       contextIsolation: true, nodeIntegration: false, webviewTag: true
@@ -70,6 +74,7 @@ ipcMain.handle('open-workorder-direct', (_, { workOrderId, orgUrl, title }) => {
     width: 1200, height: 840, minWidth: 900, minHeight: 600,
     frame: false, backgroundColor: '#0d0f14',
     title: title || 'Work Order', show: false,
+    icon: APP_ICON,
     webPreferences: {
       preload: path.join(__dirname, 'preload-workorder.js'),
       contextIsolation: true, nodeIntegration: false, webviewTag: true
@@ -87,6 +92,7 @@ ipcMain.handle('open-contact', (_, { contactId, orgUrl, title }) => {
     width: 760, height: 640, minWidth: 600, minHeight: 480,
     frame: false, backgroundColor: '#0d0f14',
     title: title || 'Contact', show: false,
+    icon: APP_ICON,
     webPreferences: {
       preload: path.join(__dirname, 'preload-workorder.js'),
       contextIsolation: true, nodeIntegration: false, webviewTag: true
@@ -97,6 +103,24 @@ ipcMain.handle('open-contact', (_, { contactId, orgUrl, title }) => {
   });
   cWin.once('ready-to-show', () => cWin.show());
   cWin.setMenuBarVisibility(false);
+});
+
+ipcMain.handle('open-team-member', (_, { name, orgUrl, title }) => {
+  const tWin = new BrowserWindow({
+    width: 760, height: 640, minWidth: 600, minHeight: 480,
+    frame: false, backgroundColor: '#0d0f14',
+    title: title || 'Team Member', show: false,
+    icon: APP_ICON,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-workorder.js'),
+      contextIsolation: true, nodeIntegration: false, webviewTag: true
+    }
+  });
+  tWin.loadFile(path.join(__dirname, 'renderer', 'team-member.html'), {
+    hash: `name=${encodeURIComponent(name)}&org=${encodeURIComponent(orgUrl)}`
+  });
+  tWin.once('ready-to-show', () => tWin.show());
+  tWin.setMenuBarVisibility(false);
 });
 
 const { shell } = require('electron');

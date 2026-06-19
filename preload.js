@@ -9,4 +9,5 @@ contextBridge.exposeInMainWorld('api', {
   openWorkOrder: (workOrderId, orgUrl, title) => ipcRenderer.invoke('open-workorder', { workOrderId, orgUrl, title }),
   openWorkOrderDirect: (workOrderId, orgUrl, title) => ipcRenderer.invoke('open-workorder-direct', { workOrderId, orgUrl, title }),
   openContact: (contactId, orgUrl, title) => ipcRenderer.invoke('open-contact', { contactId, orgUrl, title }),
+  openTeamMember: (name, orgUrl, title) => ipcRenderer.invoke('open-team-member', { name, orgUrl, title }),
 });

@@ -2,12 +2,13 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8"/>
-  <title>Contact</title>
+  <title>Team Member</title>
   <style>
     :root {
       --bg:#3c3f46; --bg2:#45484f; --bg3:#4f535b;
       --accent:#6cc0f5; --text:#f1f3f6; --muted:#9aa0ab; --muted2:#c4c9d2;
       --border:#5b5f68; --danger:#ef4444;
+      --green:#12b76a; --yellow:#f7be09; --blue:#5bb7f7; --red:#ef4444;
     }
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { height: 100vh; overflow: hidden; }
@@ -28,13 +29,13 @@
     .btn-sm { padding: 4px 10px; font-size: 11px; }
 
     #main-area { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-    #c-loading { flex: 1; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 12px; color: var(--muted2); }
-    #c-content { flex: 1; min-height: 0; display: none; flex-direction: column; overflow-y: auto; padding: 24px; gap: 16px; }
+    #t-loading { flex: 1; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 12px; color: var(--muted2); }
+    #t-content { flex: 1; min-height: 0; display: none; flex-direction: column; overflow-y: auto; padding: 24px; gap: 16px; }
 
-    #c-header { display: flex; align-items: center; gap: 14px; margin-bottom: 4px; }
-    #c-avatar { width: 48px; height: 48px; border-radius: 50%; background: linear-gradient(135deg, var(--accent), #4a9ddb); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 18px; color: #fff; flex-shrink: 0; }
-    #c-name { font-size: 19px; font-weight: 700; }
-    #c-title { font-size: 13px; color: var(--muted2); margin-top: 2px; }
+    #t-header { display: flex; align-items: center; gap: 14px; margin-bottom: 4px; }
+    #t-avatar { width: 48px; height: 48px; border-radius: 50%; background: linear-gradient(135deg, var(--accent), #4a9ddb); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 18px; color: #fff; flex-shrink: 0; }
+    #t-name { font-size: 19px; font-weight: 700; }
+    #t-title { font-size: 13px; color: var(--muted2); margin-top: 2px; }
 
     .card { background: var(--bg2); border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px; }
     .card-title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .7px; color: var(--muted); margin-bottom: 14px; }
@@ -44,8 +45,30 @@
     .field-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .3px; color: var(--muted); }
     .field-value { font-size: 13px; color: var(--text); min-height: 20px; }
     .field-value.dim { color: var(--muted2); }
-    .field-value.link { color: var(--accent); cursor: pointer; }
-    .field-value.link:hover { text-decoration: underline; }
+
+    .status-badge { display: inline-flex; align-items: center; padding: 4px 12px; border-radius: 20px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; }
+    .badge-free       { background: rgba(18,183,106,.15);  color: var(--green); }
+    .badge-traveling  { background: rgba(247,190,9,.15);   color: var(--yellow); }
+    .badge-inprogress { background: rgba(108,192,245,.18); color: var(--accent); }
+    .badge-scheduled  { background: rgba(74,157,219,.18);  color: var(--blue); }
+    .badge-default    { background: rgba(108,117,125,.15); color: var(--muted2); }
+
+    .wo-list { display: flex; flex-direction: column; gap: 8px; }
+    .wo-item {
+      background: var(--bg3); border: 1px solid var(--border);
+      border-radius: 10px; padding: 10px 12px;
+      display: flex; justify-content: space-between; align-items: center;
+      cursor: default;
+    }
+    .wo-item-title { font-size: 13px; font-weight: 600; }
+
+    #t-tooltip {
+      position: fixed; z-index: 9999; pointer-events: none;
+      background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
+      padding: 10px 12px; max-width: 260px; box-shadow: 0 4px 20px rgba(0,0,0,.4);
+      display: none; font-size: 12px; color: var(--text); line-height: 1.4;
+    }
+    #t-tooltip.visible { display: block; }
 
     .spinner { width: 28px; height: 28px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
@@ -58,10 +81,8 @@
 <webview id="api-wv" partition="persist:dynamics" style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;"></webview>
 
 <div id="titlebar">
-  <span id="titlebar-label">Contact</span>
-  <div id="header-actions">
-    <button class="btn btn-ghost btn-sm" id="open-dynamics-btn" style="color:var(--accent);">↗ Open in Dynamics</button>
-  </div>
+  <span id="titlebar-label">Team Member</span>
+  <div id="header-actions"><button class="btn btn-ghost btn-sm" id="refresh-btn">Refresh</button></div>
   <div id="win-controls">
     <button class="wc-btn wc-min"   onclick="api.minimize()"><svg viewBox="0 0 10 10"><path d="M1 5h8" stroke="currentColor" stroke-width="1" stroke-linecap="round"/></svg></button>
     <button class="wc-btn wc-max"   onclick="api.maximize()"><svg viewBox="0 0 10 10"><rect x="1.5" y="1.5" width="7" height="7" stroke="currentColor" stroke-width="1" fill="none"/></svg></button>
@@ -70,17 +91,17 @@
 </div>
 
 <div id="main-area">
-  <div id="c-loading">
+  <div id="t-loading">
     <div class="spinner"></div>
     <span>Loading…</span>
   </div>
 
-  <div id="c-content">
-    <div id="c-header">
-      <div id="c-avatar">—</div>
+  <div id="t-content">
+    <div id="t-header">
+      <div id="t-avatar">—</div>
       <div>
-        <div id="c-name">—</div>
-        <div id="c-title"></div>
+        <div id="t-name">—</div>
+        <div id="t-title"></div>
       </div>
     </div>
 
@@ -89,25 +110,28 @@
       <div class="field-grid">
         <div class="field-item">
           <span class="field-label">Phone</span>
-          <span class="field-value" id="c-phone">—</span>
+          <span class="field-value" id="t-phone">—</span>
         </div>
         <div class="field-item">
           <span class="field-label">Mobile</span>
-          <span class="field-value" id="c-mobile">—</span>
+          <span class="field-value" id="t-mobile">—</span>
         </div>
         <div class="field-item span-2">
           <span class="field-label">Email</span>
-          <span class="field-value" id="c-email">—</span>
-        </div>
-        <div class="field-item span-2">
-          <span class="field-label">Account</span>
-          <span class="field-value dim" id="c-account">—</span>
+          <span class="field-value" id="t-email">—</span>
         </div>
       </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Current Status</div>
+      <div id="t-status-body"></div>
     </div>
   </div>
 </div>
 
-<script src="contact.js"></script>
+<div id="t-tooltip"></div>
+
+<script src="team-member.js"></script>
 </body>
 </html>

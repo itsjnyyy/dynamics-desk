@@ -9,9 +9,6 @@ let xrmReady = false;
 let activeTab = 'bookings';
 let weekOffset = 0;
 
-// Configure these for your own org before running
-const MY_RESOURCE_NAME = 'Your Name';
-
 const cache = { bookings: null, schedule: null, scheduleWeek: null, accounts: null, contacts: null };
 
 // ── Utility ────────────────────────────────────────────────────────────────
@@ -29,7 +26,7 @@ function fmtTime(iso) {
 function fmtDateTime(iso) {
   if (!iso) return '—';
   const d = new Date(iso);
-  return d.toLocaleDateString(undefined, { month:'short', day:'numeric' }) + ' ' +
+  return d.toLocaleDateString(undefined, { month:'short', day:'numeric', year:'numeric' }) + ' ' +
          d.toLocaleTimeString(undefined, { hour:'2-digit', minute:'2-digit' });
 }
 
@@ -47,7 +44,8 @@ function resourceColor(name) {
 function statusBadge(statusName) {
   const s = (statusName || '').toLowerCase();
   let cls = 'badge-default';
-  if (s.includes('scheduled') || s.includes('committed')) cls = 'badge-scheduled';
+  if (s === 'free') cls = 'badge-free';
+  else if (s.includes('scheduled') || s.includes('committed')) cls = 'badge-scheduled';
   else if (s.includes('travel'))     cls = 'badge-traveling';
   else if (s.includes('progress') || s.includes('started')) cls = 'badge-inprogress';
   else if (s.includes('complete'))   cls = 'badge-completed';
@@ -159,7 +157,18 @@ async function waitForXrm() {
   setStatus('Could not connect');
 }
 
-function setStatus(msg) { $('titlebar-status').textContent = msg; }
+function setStatus(msg) {
+  $('titlebar-status').textContent = msg;
+  const inProgress = msg === 'Connected' || msg === 'Loading…' || msg === 'Reconnecting…';
+  $('reconnect-btn').classList.toggle('hidden', inProgress);
+}
+
+function reconnect() {
+  xrmReady = false;
+  setStatus('Reconnecting…');
+  apiWv.src = orgUrl + '/main.aspx';
+}
+$('reconnect-btn').addEventListener('click', reconnect);
 
 // ── Xrm.WebApi fetch ──────────────────────────────────────────────────────
 async function xrmFetchPage(entity, query) {
@@ -208,15 +217,32 @@ document.querySelectorAll('.nav-item').forEach(item => {
 
 function loadTab(tab) {
   if (tab === 'bookings') loadBookings();
-  else if (tab === 'schedule') renderSchedule();
+  else if (tab === 'schedule') renderSchedule().then(scrollToToday);
   else if (tab === 'accounts') loadAccounts();
   else if (tab === 'contacts') loadContacts();
+  else if (tab === 'team') loadTeam();
 }
 
 // ── BOOKINGS ───────────────────────────────────────────────────────────────
 let bookingsFilter = 'upcoming';
 let bookingsSearch = '';
+let bookingsStatusFilter = '';
+let bookingsSubstatusFilter = '';
+const BOOKINGS_SUBSTATUS_OPTIONS = ['5 Day Monitoring', 'Completed', 'Unscheduled', 'Follow-up Required', 'Parts Required'];
+(function initBookingsSubstatusFilter() {
+  const sel = $('bookings-substatus-filter');
+  sel.innerHTML = '<option value="">All Substatuses</option>' +
+    BOOKINGS_SUBSTATUS_OPTIONS.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('');
+  sel.addEventListener('change', e => {
+    bookingsSubstatusFilter = e.target.value;
+    renderBookings(currentBookingsDataset(), cache.bookingsCustomerMap || {});
+  });
+})();
 let bookingsMonthOffset = 0; // 0 = current month
+// Set this to your own resource name before running
+const DEFAULT_BOOKINGS_RESOURCE = 'Your Name';
+let bookingsResource = DEFAULT_BOOKINGS_RESOURCE;
+const ALL_MEMBERS_VALUE = '__ALL__';
 
 function getMonthRange(offset) {
   const now   = new Date();
@@ -232,8 +258,42 @@ function updateBookingsMonthLabel() {
   $('bookings-month-label').textContent = from.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
 }
 
+let allBookingStatusNames = null;
+async function loadAllBookingStatusNames() {
+  if (allBookingStatusNames) return allBookingStatusNames;
+  try {
+    const statuses = await xrmFetch('bookingstatus', '?$select=name,statuscode&$orderby=name asc');
+    const seen = new Map();
+    for (const s of statuses) {
+      if (!seen.has(s.name) || s.statuscode < seen.get(s.name).statuscode) seen.set(s.name, s);
+    }
+    allBookingStatusNames = [...seen.keys()].sort((a, b) => a.localeCompare(b));
+  } catch (_) {
+    allBookingStatusNames = [];
+  }
+  populateStatusFilterOptions();
+  return allBookingStatusNames;
+}
+
+function resourceFilterClause() {
+  if (bookingsResource === ALL_MEMBERS_VALUE) {
+    return '(' + SCHEDULE_RESOURCES.map(n => `Resource/name eq '${n.replace(/'/g, "''")}'`).join(' or ') + ')';
+  }
+  return `Resource/name eq '${bookingsResource.replace(/'/g, "''")}'`;
+}
+
+function populateStatusFilterOptions() {
+  const statusSel = $('bookings-status-filter');
+  if (!allBookingStatusNames) return;
+  const prevValue = statusSel.value;
+  statusSel.innerHTML = '<option value="">All Statuses</option>' +
+    allBookingStatusNames.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('');
+  statusSel.value = allBookingStatusNames.includes(prevValue) ? prevValue : '';
+}
+
 async function loadBookings(force = false) {
-  const monthKey = `month:${bookingsMonthOffset}`;
+  if (!allBookingStatusNames) loadAllBookingStatusNames();
+  const monthKey = `month:${bookingsMonthOffset}:${bookingsResource}`;
   updateBookingsMonthLabel();
   if (!force && cache.bookingsMonths?.[monthKey]) {
     renderBookings(cache.bookingsMonths[monthKey], cache.bookingsCustomerMap || {});
@@ -250,31 +310,36 @@ async function loadBookings(force = false) {
     const records = await xrmFetch('bookableresourcebooking',
       '?$select=name,starttime,endtime,_resource_value,_bookingstatus_value,_msdyn_workorder_value,bookableresourcebookingid' +
       '&$expand=BookingStatus($select=name),Resource($select=name)' +
-      `&$filter=starttime ge ${fromIso} and starttime le ${toIso} and Resource/name eq '${MY_RESOURCE_NAME}'` +
+      `&$filter=starttime ge ${fromIso} and starttime le ${toIso} and ${resourceFilterClause()}` +
       '&$orderby=starttime desc&$top=500'
     );
 
     if (!cache.bookingsMonths) cache.bookingsMonths = {};
     cache.bookingsMonths[monthKey] = records;
 
-    // Fetch customer names for any work orders not yet in the map
+    // Fetch customer names (cached, rarely change) + substatuses (always refreshed, change often)
     if (!cache.bookingsCustomerMap) cache.bookingsCustomerMap = {};
+    if (!cache.bookingsSubstatusMap) cache.bookingsSubstatusMap = {};
     const knownIds = new Set(Object.keys(cache.bookingsCustomerMap));
-    const newWoIds = [...new Set(records.map(r => r._msdyn_workorder_value).filter(id => id && !knownIds.has(id)))];
-    if (newWoIds.length) {
+    const allWoIds = [...new Set(records.map(r => r._msdyn_workorder_value).filter(Boolean))];
+    const woIdsToFetch = force ? allWoIds : allWoIds.filter(id => !knownIds.has(id));
+    if (woIdsToFetch.length) {
       try {
-        const CHUNK = 12;
-        for (let i = 0; i < newWoIds.length; i += CHUNK) {
-          const chunk = newWoIds.slice(i, i + CHUNK);
+        const CHUNK = 30;
+        const chunks = [];
+        for (let i = 0; i < woIdsToFetch.length; i += CHUNK) chunks.push(woIdsToFetch.slice(i, i + CHUNK));
+        const results = await Promise.all(chunks.map(chunk => {
           const filter = chunk.map(id => `msdyn_workorderid eq ${id}`).join(' or ');
-          const wos = await xrmFetch('msdyn_workorder',
-            `?$select=msdyn_workorderid,_msdyn_serviceaccount_value&$filter=${filter}&$top=${CHUNK}`
+          return xrmFetch('msdyn_workorder',
+            `?$select=msdyn_workorderid,_msdyn_serviceaccount_value,_msdyn_substatus_value&$filter=${filter}&$top=${chunk.length}`
           );
-          wos.forEach(wo => {
-            const name = wo['_msdyn_serviceaccount_value@OData.Community.Display.V1.FormattedValue'] || '';
-            if (name) cache.bookingsCustomerMap[wo.msdyn_workorderid] = name;
-          });
-        }
+        }));
+        results.flat().forEach(wo => {
+          const name = wo['_msdyn_serviceaccount_value@OData.Community.Display.V1.FormattedValue'] || '';
+          if (name) cache.bookingsCustomerMap[wo.msdyn_workorderid] = name;
+          const substatus = wo['_msdyn_substatus_value@OData.Community.Display.V1.FormattedValue'] || '';
+          cache.bookingsSubstatusMap[wo.msdyn_workorderid] = substatus;
+        });
       } catch (_) {}
     }
 
@@ -292,7 +357,11 @@ function renderBookings(records, customerMap = {}) {
 
   let rows = records.filter(r => {
     const resource = (r['_resource_value@OData.Community.Display.V1.FormattedValue'] || r.Resource?.name || '').toLowerCase();
-    if (!resource.includes(MY_RESOURCE_NAME.toLowerCase())) return false;
+    if (bookingsResource === ALL_MEMBERS_VALUE) {
+      if (!SCHEDULE_RESOURCES.some(n => resource.includes(n.toLowerCase()))) return false;
+    } else if (!resource.includes(bookingsResource.toLowerCase())) {
+      return false;
+    }
     if (bookingsSearch) return true; // search bypasses date filters
     const start = r.starttime ? new Date(r.starttime) : null;
     if (bookingsFilter === 'today')    return start && start >= todayStart && start < todayEnd;
@@ -309,6 +378,22 @@ function renderBookings(records, customerMap = {}) {
       (r.BookingStatus?.name || '').toLowerCase().includes(q)
     );
   }
+
+  populateStatusFilterOptions();
+  bookingsStatusFilter = $('bookings-status-filter').value;
+
+  if (bookingsStatusFilter) {
+    rows = rows.filter(r =>
+      (r.BookingStatus?.name || r['_bookingstatus_value@OData.Community.Display.V1.FormattedValue'] || '') === bookingsStatusFilter
+    );
+  }
+
+  if (bookingsSubstatusFilter) {
+    const substatusMap = cache.bookingsSubstatusMap || {};
+    rows = rows.filter(r => substatusMap[r._msdyn_workorder_value] === bookingsSubstatusFilter);
+  }
+
+  // Default sort: by date (rows already ordered by starttime from the underlying query)
 
   $('bookings-count').textContent = rows.length;
   if (rows.length === 0) { showState('bookings', 'empty'); return; }
@@ -333,14 +418,30 @@ function renderBookings(records, customerMap = {}) {
   showState('bookings', 'table');
 }
 
+function currentBookingsDataset() {
+  if (bookingsSearch || bookingsFilter === 'all') return cache.bookingsAllByResource?.[bookingsResource] || [];
+  const monthKey = `month:${bookingsMonthOffset}:${bookingsResource}`;
+  return cache.bookingsMonths?.[monthKey] || [];
+}
+
+$('bookings-status-filter').addEventListener('change', e => {
+  bookingsStatusFilter = e.target.value;
+  renderBookings(currentBookingsDataset(), cache.bookingsCustomerMap || {});
+});
+
 document.querySelectorAll('#bookings-filter .chip').forEach(c => {
   c.addEventListener('click', () => {
     document.querySelectorAll('#bookings-filter .chip').forEach(x => x.classList.remove('active'));
     c.classList.add('active');
     bookingsFilter = c.dataset.filter;
-    const monthKey = `month:${bookingsMonthOffset}`;
-    const cached = cache.bookingsMonths?.[monthKey];
-    if (cached) renderBookings(cached, cache.bookingsCustomerMap || {});
+    if (bookingsFilter === 'all') {
+      loadAllBookingsForSearch();
+    } else {
+      const monthKey = `month:${bookingsMonthOffset}`;
+      const cached = cache.bookingsMonths?.[monthKey];
+      if (cached) renderBookings(cached, cache.bookingsCustomerMap || {});
+      else loadBookings();
+    }
   });
 });
 $('bookings-search').addEventListener('input', e => {
@@ -348,7 +449,7 @@ $('bookings-search').addEventListener('input', e => {
   if (bookingsSearch) {
     loadAllBookingsForSearch();
   } else {
-    const monthKey = `month:${bookingsMonthOffset}`;
+    const monthKey = `month:${bookingsMonthOffset}:${bookingsResource}`;
     const cached = cache.bookingsMonths?.[monthKey];
     if (cached) renderBookings(cached, cache.bookingsCustomerMap || {});
     else loadBookings();
@@ -356,8 +457,10 @@ $('bookings-search').addEventListener('input', e => {
 });
 
 async function loadAllBookingsForSearch() {
-  if (cache.bookingsAll) {
-    renderBookings(cache.bookingsAll, cache.bookingsCustomerMap || {});
+  if (!allBookingStatusNames) loadAllBookingStatusNames();
+  if (!cache.bookingsAllByResource) cache.bookingsAllByResource = {};
+  if (cache.bookingsAllByResource[bookingsResource]) {
+    renderBookings(cache.bookingsAllByResource[bookingsResource], cache.bookingsCustomerMap || {});
     return;
   }
   showState('bookings', 'loading');
@@ -365,32 +468,36 @@ async function loadAllBookingsForSearch() {
     const records = await xrmFetch('bookableresourcebooking',
       '?$select=name,starttime,endtime,_resource_value,_bookingstatus_value,_msdyn_workorder_value,bookableresourcebookingid' +
       `&$expand=BookingStatus($select=name),Resource($select=name)` +
-      `&$filter=Resource/name eq '${MY_RESOURCE_NAME}'` +
-      '&$orderby=starttime desc&$top=5000'
+      `&$filter=${resourceFilterClause()}` +
+      '&$orderby=starttime desc'
     );
-    cache.bookingsAll = records;
+    cache.bookingsAllByResource[bookingsResource] = records;
 
-    // Fetch any customer names not yet cached
+    // Fetch customer names + substatuses for every work order currently in view
+    // (substatus always refreshed since it changes often; customer name rarely does but refreshing it too is cheap here)
     if (!cache.bookingsCustomerMap) cache.bookingsCustomerMap = {};
-    const knownIds = new Set(Object.keys(cache.bookingsCustomerMap));
-    const newWoIds = [...new Set(records.map(r => r._msdyn_workorder_value).filter(id => id && !knownIds.has(id)))];
-    if (newWoIds.length) {
+    if (!cache.bookingsSubstatusMap) cache.bookingsSubstatusMap = {};
+    const woIdsToFetch = [...new Set(records.map(r => r._msdyn_workorder_value).filter(Boolean))];
+    if (woIdsToFetch.length) {
       try {
-        const CHUNK = 12;
-        for (let i = 0; i < newWoIds.length; i += CHUNK) {
-          const chunk = newWoIds.slice(i, i + CHUNK);
+        const CHUNK = 30;
+        const chunks = [];
+        for (let i = 0; i < newWoIds.length; i += CHUNK) chunks.push(newWoIds.slice(i, i + CHUNK));
+        const results = await Promise.all(chunks.map(chunk => {
           const filter = chunk.map(id => `msdyn_workorderid eq ${id}`).join(' or ');
-          const wos = await xrmFetch('msdyn_workorder',
-            `?$select=msdyn_workorderid,_msdyn_serviceaccount_value&$filter=${filter}&$top=${CHUNK}`
+          return xrmFetch('msdyn_workorder',
+            `?$select=msdyn_workorderid,_msdyn_serviceaccount_value,_msdyn_substatus_value&$filter=${filter}&$top=${chunk.length}`
           );
-          wos.forEach(wo => {
-            const name = wo['_msdyn_serviceaccount_value@OData.Community.Display.V1.FormattedValue'] || '';
-            if (name) cache.bookingsCustomerMap[wo.msdyn_workorderid] = name;
-          });
-        }
+        }));
+        results.flat().forEach(wo => {
+          const name = wo['_msdyn_serviceaccount_value@OData.Community.Display.V1.FormattedValue'] || '';
+          if (name) cache.bookingsCustomerMap[wo.msdyn_workorderid] = name;
+          const substatus = wo['_msdyn_substatus_value@OData.Community.Display.V1.FormattedValue'] || '';
+          cache.bookingsSubstatusMap[wo.msdyn_workorderid] = substatus;
+        });
       } catch (_) {}
     }
-    renderBookings(cache.bookingsAll, cache.bookingsCustomerMap);
+    renderBookings(cache.bookingsAllByResource[bookingsResource], cache.bookingsCustomerMap);
   } catch (e) {
     showState('bookings', 'empty');
     console.error('Bookings search error:', e);
@@ -399,7 +506,36 @@ async function loadAllBookingsForSearch() {
 $('bookings-month-prev').addEventListener('click',  () => { bookingsMonthOffset--; loadBookings(); });
 $('bookings-month-next').addEventListener('click',  () => { bookingsMonthOffset++; loadBookings(); });
 $('bookings-month-today').addEventListener('click', () => { bookingsMonthOffset = 0; loadBookings(); });
-$('bookings-refresh').addEventListener('click', () => loadBookings(true));
+$('bookings-refresh').addEventListener('click', async () => {
+  const wrap = $('bookings-table-wrap');
+  const scrollPos = wrap.scrollTop;
+  if (bookingsFilter === 'all') {
+    if (cache.bookingsAllByResource) cache.bookingsAllByResource[bookingsResource] = null;
+    await loadAllBookingsForSearch();
+  } else {
+    await loadBookings(true);
+  }
+  wrap.scrollTop = scrollPos;
+});
+
+$('bookings-reset-filters').addEventListener('click', () => {
+  bookingsSearch = '';
+  $('bookings-search').value = '';
+
+  bookingsFilter = 'upcoming';
+  document.querySelectorAll('#bookings-filter .chip').forEach(c => c.classList.toggle('active', c.dataset.filter === 'upcoming'));
+
+  bookingsStatusFilter = '';
+  $('bookings-status-filter').value = '';
+
+  bookingsSubstatusFilter = '';
+  $('bookings-substatus-filter').value = '';
+
+  bookingsResource = DEFAULT_BOOKINGS_RESOURCE;
+  $('bookings-resource-filter').value = DEFAULT_BOOKINGS_RESOURCE;
+
+  loadBookings();
+});
 
 // ── SCHEDULE ───────────────────────────────────────────────────────────────
 function getWeekRange(offset = 0) {
@@ -414,10 +550,28 @@ function getWeekRange(offset = 0) {
   return { monday, sunday };
 }
 
-// List the technician/resource names you want shown on the schedule board
+// List the technician/resource names you want shown on the schedule board and team tab
 const SCHEDULE_RESOURCES = [
   'Resource One','Resource Two','Resource Three'
 ];
+
+// ── Bookings team-member filter ──────────────────────────────────────────────
+(function initBookingsResourceFilter() {
+  const sel = $('bookings-resource-filter');
+  sel.innerHTML = `<option value="${ALL_MEMBERS_VALUE}">All Members</option>` +
+    SCHEDULE_RESOURCES.map(name =>
+      `<option value="${esc(name)}">${esc(name)}</option>`
+    ).join('');
+  sel.value = bookingsResource;
+  sel.addEventListener('change', e => {
+    bookingsResource = e.target.value;
+    if (bookingsFilter === 'all' || bookingsSearch) {
+      loadAllBookingsForSearch();
+    } else {
+      loadBookings();
+    }
+  });
+})();
 
 // Time-based layout constants — horizontal timeline
 const DAY_START_H    = 6;              // 6 AM
@@ -440,6 +594,19 @@ function timeToX(iso, monday) {
 function bookingWidth(start, end) {
   const mins = (new Date(end) - new Date(start)) / 60000;
   return Math.max(12, mins * PX_PER_MIN);
+}
+
+function scrollToToday() {
+  if (weekOffset !== 0) return;
+  const { monday } = getWeekRange(0);
+  const today = new Date();
+  const dayIndex = Math.floor((today - monday) / 86400000);
+  if (dayIndex < 0 || dayIndex > 6) return;
+  const wrap = $('schedule-wrap');
+  const dayLeft = dayIndex * DAY_W;
+  const minutesIntoDay = Math.max(0, (today.getHours() - DAY_START_H) + today.getMinutes() / 60) * PX_PER_HOUR;
+  const center = dayLeft + minutesIntoDay - wrap.clientWidth / 2;
+  wrap.scrollLeft = Math.max(0, center);
 }
 
 async function renderSchedule(force = false) {
@@ -571,7 +738,7 @@ async function renderSchedule(force = false) {
       const isToday = d.toDateString() === today;
       const dayLeft = di * DAY_W;
       if (isToday) {
-        rowHtml += `<div style="position:absolute;left:${dayLeft}px;width:${DAY_W}px;top:0;bottom:0;background:rgba(124,106,247,.05);pointer-events:none;"></div>`;
+        rowHtml += `<div style="position:absolute;left:${dayLeft}px;width:${DAY_W}px;top:0;bottom:0;background:rgba(108,192,245,.07);pointer-events:none;"></div>`;
       }
       rowHtml += `<div style="position:absolute;left:${dayLeft}px;top:0;bottom:0;width:1px;background:var(--border);pointer-events:none;"></div>`;
       for (let h = 1; h < HOURS_PER_DAY; h++) {
@@ -617,7 +784,7 @@ async function renderSchedule(force = false) {
 
 $('week-prev').addEventListener('click',        () => { weekOffset--; renderSchedule(true); });
 $('week-next').addEventListener('click',        () => { weekOffset++; renderSchedule(true); });
-$('week-today-btn').addEventListener('click',   () => { weekOffset = 0; renderSchedule(true); });
+$('week-today-btn').addEventListener('click',   () => { weekOffset = 0; renderSchedule(true).then(scrollToToday); });
 $('schedule-refresh').addEventListener('click', () => renderSchedule(true));
 
 // ── ACCOUNTS ───────────────────────────────────────────────────────────────
@@ -743,6 +910,55 @@ $('contacts-search').addEventListener('input', e => {
   }, 300);
 });
 $('contacts-refresh').addEventListener('click', () => loadContacts(true));
+
+// ── TEAM ─────────────────────────────────────────────────────────────────────
+async function loadTeam(force = false) {
+  if (cache.team && !force) { renderTeam(cache.team); return; }
+  showState('team', 'loading');
+  try {
+    const nowIso = new Date().toISOString();
+    const filter = '(' + SCHEDULE_RESOURCES.map(n => `Resource/name eq '${n.replace(/'/g, "''")}'`).join(' or ') + ')' +
+      ` and starttime le ${nowIso} and endtime ge ${nowIso}`;
+    const bookings = await xrmFetch('bookableresourcebooking',
+      `?$select=name&$expand=BookingStatus($select=name),Resource($select=name)&$filter=${filter}`
+    );
+    const priority = { 'Traveling': 3, 'In Progress': 2, 'Scheduled': 1 };
+    const statusByName = {};
+    bookings.forEach(b => {
+      const name = b.Resource?.name;
+      if (!name) return;
+      const raw = (b.BookingStatus?.name || '').toLowerCase();
+      let label = 'Scheduled';
+      if (raw.includes('travel')) label = 'Traveling';
+      else if (raw.includes('progress')) label = 'In Progress';
+      const existing = statusByName[name];
+      if (!existing || priority[label] > priority[existing]) statusByName[name] = label;
+    });
+    cache.team = SCHEDULE_RESOURCES.map(name => ({ name, status: statusByName[name] || 'Free' }));
+    renderTeam(cache.team);
+  } catch (e) {
+    showState('team', 'empty');
+    console.error('Team error:', e);
+  }
+}
+
+function renderTeam(members) {
+  $('team-count').textContent = members.length;
+  if (members.length === 0) { showState('team', 'empty'); return; }
+  $('team-body').innerHTML = members.map((m, i) => `<tr data-idx="${i}" class="row-clickable">
+    <td><strong>${esc(m.name)}</strong></td>
+    <td>${statusBadge(m.status === 'Free' ? 'Free' : m.status)}</td>
+  </tr>`).join('');
+  $('team-body').querySelectorAll('tr[data-idx]').forEach(tr => {
+    tr.addEventListener('click', () => {
+      const m = members[+tr.dataset.idx];
+      window.api.openTeamMember(m.name, orgUrl, m.name);
+    });
+  });
+  showState('team', 'table');
+}
+
+$('team-refresh').addEventListener('click', () => loadTeam(true));
 
 // ── Show/hide states ───────────────────────────────────────────────────────
 function showState(tab, state) {
