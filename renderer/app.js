@@ -3,13 +3,59 @@
 // ── Globals ────────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
 const apiWv   = $('api-wv');
+const spWv    = $('sp-wv');
 const loginWv = $('login-wv');
+
+// SharePoint PTO calendar (source of truth for who's out)
+const SP_SITE = 'https://YOUR-TENANT.sharepoint.com/sites/YOUR-SITE';
+const SP_TIMEOFF_LIST = 'YOUR-TIME-OFF-LIST';
+async function spFetch(apiPath) {
+  const url = SP_SITE + apiPath;
+  const script = `fetch(${JSON.stringify(url)},{headers:{Accept:'application/json;odata=nometadata'},credentials:'include'}).then(r=>r.text()).catch(e=>JSON.stringify({__err:String(e&&e.message||e)}))`;
+  const txt = await spWv.executeJavaScript(script);
+  try { return JSON.parse(txt); } catch (_) { return { __raw: String(txt).slice(0, 300) }; }
+}
+async function fetchSharePointTimeOff(fromIso, toIso) {
+  try {
+    const from = fromIso.replace(/\.\d+Z$/, 'Z');
+    const to   = toIso.replace(/\.\d+Z$/, 'Z');
+    const path = `/_api/web/lists/getbytitle('${SP_TIMEOFF_LIST}')/items` +
+      `?$select=Title,EventDate,EndDate,Category` +
+      `&$filter=EventDate le '${to}' and EndDate ge '${from}'&$top=1000`;
+    const r = await spFetch(path);
+    if (!r || !r.value) { if (r && r['odata.error']) console.warn('SP PTO filter error:', r['odata.error']?.message?.value); return []; }
+    // All-day events store dates at UTC midnight but mean a local date — use the date part only.
+    const dpart = s => { const [y, m, d] = String(s).slice(0, 10).split('-').map(Number); return new Date(y, (m || 1) - 1, d || 1); };
+    return r.value.map(i => {
+      const start = dpart(i.EventDate);
+      const end   = dpart(i.EndDate); end.setHours(23, 59, 59, 999);
+      return { name: i.Title, start, end, category: i.Category };
+    });
+  } catch (e) { console.warn('SharePoint PTO fetch failed:', e); return []; }
+}
 let orgUrl = '';
 let xrmReady = false;
 let activeTab = 'bookings';
 let weekOffset = 0;
 
 const cache = { bookings: null, schedule: null, scheduleWeek: null, accounts: null, contacts: null };
+
+function toast(msg, isError) {
+  let el = document.getElementById('app-toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'app-toast';
+    el.style.cssText = 'position:fixed;bottom:22px;left:50%;transform:translateX(-50%);z-index:500;padding:12px 20px;border-radius:10px;font-size:13px;font-weight:600;box-shadow:0 12px 40px rgba(0,0,0,.5);max-width:560px;text-align:center;transition:opacity .3s;';
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.style.background = isError ? 'var(--danger)' : 'var(--bg2)';
+  el.style.color = isError ? '#fff' : 'var(--text)';
+  el.style.border = '1px solid ' + (isError ? 'var(--danger)' : 'var(--border)');
+  el.style.opacity = '1';
+  clearTimeout(el._t);
+  el._t = setTimeout(() => { el.style.opacity = '0'; }, isError ? 6500 : 4000);
+}
 
 // ── Utility ────────────────────────────────────────────────────────────────
 const esc  = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -70,19 +116,40 @@ function openRecord(r) {
 }
 
 // ── Setup ──────────────────────────────────────────────────────────────────
+let appSettings = {};
+async function persistSettings() { await window.api.saveSettings(appSettings); }
+
+function applyTeam(team) {
+  SCHEDULE_RESOURCES = Array.isArray(team) ? team.filter(Boolean) : [];
+  DEFAULT_BOOKINGS_RESOURCE = SCHEDULE_RESOURCES[0] || ALL_MEMBERS_VALUE;
+  if (!bookingsResource) bookingsResource = DEFAULT_BOOKINGS_RESOURCE;
+  populateBookingsResourceFilter();
+}
+
 async function init() {
-  const s = await window.api.getSettings();
-  if (s?.orgUrl) { orgUrl = s.orgUrl.replace(/\/$/, ''); startApp(); }
-  else $('setup-overlay').classList.remove('hidden');
+  appSettings = (await window.api.getSettings()) || {};
+  const teamNeverConfigured = appSettings.team === undefined;
+  applyTeam(appSettings.team);
+  if (appSettings.orgUrl) {
+    orgUrl = appSettings.orgUrl.replace(/\/$/, '');
+    startApp();
+    // Existing install that predates configurable teams — prompt once to set them up
+    if (teamNeverConfigured) openTeamManager(true);
+  } else {
+    $('setup-overlay').classList.remove('hidden');
+  }
 }
 
 $('setup-btn').addEventListener('click', async () => {
   const val = $('setup-url').value.trim().replace(/\/$/, '');
   $('setup-error').textContent = '';
   if (!val.startsWith('http')) { $('setup-error').textContent = 'Enter a valid URL starting with https://'; return; }
-  await window.api.saveSettings({ orgUrl: val });
+  appSettings.orgUrl = val;
+  await persistSettings();
   orgUrl = val;
   startApp();
+  // First-run: if no team configured yet, prompt the user to add their team members
+  if (!SCHEDULE_RESOURCES.length) openTeamManager(true);
 });
 $('setup-url').addEventListener('keydown', e => { if (e.key === 'Enter') $('setup-btn').click(); });
 
@@ -105,6 +172,7 @@ function startApp() {
     $('user-avatar').textContent = host.slice(0, 2).toUpperCase();
   } catch (_) {}
   apiWv.src = orgUrl + '/main.aspx';
+  spWv.src  = SP_SITE + '/SitePages/Home.aspx';
   setupApiWebview();
 }
 
@@ -187,6 +255,102 @@ async function xrmFetchPage(entity, query) {
   return JSON.parse(json);
 }
 
+window.__dumpEntityFields = async function(entityLogicalName, prefix) {
+  const url = `${orgUrl}/api/data/v9.2/EntityDefinitions(LogicalName='${entityLogicalName}')/Attributes?$select=LogicalName,DisplayName,AttributeType`;
+  const json = await apiWv.executeJavaScript(
+    `fetch(${JSON.stringify(url)}, {headers:{Accept:'application/json'}}).then(r=>r.json()).then(d=>JSON.stringify(d)).catch(e=>JSON.stringify({__err:e.message}))`
+  );
+  const r = JSON.parse(json);
+  if (r?.__err) { console.error('fetch error:', r.__err); return; }
+  if (!Array.isArray(r?.value)) { console.error('Unexpected response:', json.slice(0, 500)); return; }
+  let out = r.value.map(a => ({
+    LogicalName: a.LogicalName,
+    Label: a.DisplayName?.UserLocalizedLabel?.Label || '',
+    Type: a.AttributeType
+  })).sort((a,b) => a.LogicalName.localeCompare(b.LogicalName));
+  if (prefix) out = out.filter(a => (a.LogicalName.startsWith(prefix) || a.LogicalName.includes(prefix) || a.Label.toLowerCase().includes(prefix.toLowerCase())) && a.Label);
+  console.log(JSON.stringify(out));
+  return out;
+};
+
+// List entities whose name contains a substring — helps find the right logical name
+window.__findEntities = async function(substr) {
+  const url = `${orgUrl}/api/data/v9.2/EntityDefinitions?$select=LogicalName,DisplayName`;
+  const json = await apiWv.executeJavaScript(
+    `fetch(${JSON.stringify(url)}, {headers:{Accept:'application/json'}}).then(r=>r.json()).then(d=>JSON.stringify(d)).catch(e=>JSON.stringify({__err:e.message}))`
+  );
+  const r = JSON.parse(json);
+  if (!Array.isArray(r?.value)) { console.error('Unexpected:', json.slice(0,500)); return; }
+  const s = (substr||'').toLowerCase();
+  const out = r.value.map(e => ({
+    LogicalName: e.LogicalName,
+    Label: e.DisplayName?.UserLocalizedLabel?.Label || ''
+  })).filter(e => !s || e.LogicalName.includes(s) || e.Label.toLowerCase().includes(s))
+     .sort((a,b)=>a.LogicalName.localeCompare(b.LogicalName));
+  console.log(JSON.stringify(out));
+  return out;
+};
+
+window.__dumpWorkOrder = async function(number) {
+  const skip = /^(createdon|modifiedon|_createdby|_modifiedby|_owningbusinessunit|_ownerid|_owninguser|_owningteam|versionnumber|overriddencreatedon|importsequencenumber|timezone|utcconversion|exchangerate|traversedpath|processid|stageid)/i;
+  const clean = obj => {
+    const out = {};
+    for (const k of Object.keys(obj)) {
+      if (k.includes('@') && !k.includes('FormattedValue')) continue;
+      if (skip.test(k)) continue;
+      if (obj[k] === null || obj[k] === '') continue;
+      out[k] = obj[k];
+    }
+    return out;
+  };
+  const wos = await xrmFetch('msdyn_workorder', `?$filter=msdyn_name eq '${number.replace(/'/g,"''")}'&$top=1`);
+  if (!wos[0]) { console.log('Work order not found:', number); return; }
+  console.log('WORK ORDER:', JSON.stringify(clean(wos[0]), null, 1));
+  const bookings = await xrmFetch('bookableresourcebooking', `?$filter=_msdyn_workorder_value eq ${wos[0].msdyn_workorderid}`);
+  console.log('BOOKINGS (' + bookings.length + '):', bookings[0] ? JSON.stringify(clean(bookings[0]), null, 1) : 'none');
+};
+
+async function xrmCreate(entity, data) {
+  if (!xrmReady) throw new Error('Xrm not ready');
+  await apiWv.executeJavaScript(`window.__xd=${JSON.stringify(data)}`);
+  const r = JSON.parse(await apiWv.executeJavaScript(
+    `(async()=>{try{const r=await Xrm.WebApi.createRecord("${entity}",window.__xd);return JSON.stringify({id:r.id});}catch(e){return JSON.stringify({__err:e.message})}})()`
+  ));
+  if (r?.__err) throw new Error(r.__err);
+  return r.id;
+}
+async function xrmRetrieve(entity, id, query = '') {
+  const r = JSON.parse(await apiWv.executeJavaScript(
+    `(async()=>{try{return JSON.stringify(await Xrm.WebApi.retrieveRecord("${entity}","${id}","${query.replace(/"/g,'\\"')}"));}catch(e){return JSON.stringify({__err:e.message})}})()`
+  ));
+  if (r?.__err) throw new Error(r.__err);
+  return r;
+}
+const _navCache = {};
+async function getNavPropMap(entity) {
+  if (_navCache[entity]) return _navCache[entity];
+  const url = `${orgUrl}/api/data/v9.2/EntityDefinitions(LogicalName='${entity}')/ManyToOneRelationships?$select=ReferencingAttribute,ReferencingEntityNavigationPropertyName,ReferencedEntity`;
+  const json = await apiWv.executeJavaScript(
+    `fetch(${JSON.stringify(url)},{headers:{Accept:'application/json'}}).then(r=>r.json()).then(d=>JSON.stringify(d)).catch(e=>JSON.stringify({__err:e.message}))`
+  );
+  const r = JSON.parse(json);
+  const map = {};
+  (r.value || []).forEach(rel => { map[rel.ReferencingAttribute] = { nav: rel.ReferencingEntityNavigationPropertyName, target: rel.ReferencedEntity }; });
+  _navCache[entity] = map;
+  return map;
+}
+const _setCache = {};
+async function entitySetOf(logical) {
+  if (_setCache[logical]) return _setCache[logical];
+  const url = `${orgUrl}/api/data/v9.2/EntityDefinitions(LogicalName='${logical}')?$select=EntitySetName`;
+  const json = await apiWv.executeJavaScript(
+    `fetch(${JSON.stringify(url)},{headers:{Accept:'application/json'}}).then(r=>r.json()).then(d=>JSON.stringify(d)).catch(e=>JSON.stringify({__err:e.message}))`
+  );
+  const r = JSON.parse(json);
+  _setCache[logical] = r.EntitySetName || (logical + 's');
+  return _setCache[logical];
+}
+
 async function xrmFetch(entity, query = '') {
   if (!xrmReady) throw new Error('Xrm not ready');
   let all = [];
@@ -221,7 +385,27 @@ function loadTab(tab) {
   else if (tab === 'accounts') loadAccounts();
   else if (tab === 'contacts') loadContacts();
   else if (tab === 'team') loadTeam();
+  else if (tab === 'assets') showState('assets', 'empty');
+  else if (tab === 'outlook') loadOutlook();
 }
+
+// ── OUTLOOK ──────────────────────────────────────────────────────────────────
+const OUTLOOK_URL = 'https://outlook.office.com/mail/';
+let outlookLoaded = false;
+function loadOutlook() {
+  const wv = $('outlook-wv');
+  if (!outlookLoaded) {
+    outlookLoaded = true;
+    $('outlook-loading').classList.remove('hidden');
+    wv.addEventListener('did-stop-loading', () => $('outlook-loading').classList.add('hidden'));
+    wv.addEventListener('did-fail-load', e => { if (e.errorCode !== -3) $('outlook-loading').classList.add('hidden'); });
+    // Open external links / popups in the user's real browser instead of a blank webview
+    wv.addEventListener('new-window', e => { if (e.url) window.api.openExternal(e.url); });
+    wv.src = OUTLOOK_URL;
+  }
+}
+$('outlook-refresh').addEventListener('click', () => { const wv = $('outlook-wv'); if (outlookLoaded) wv.reload(); else loadOutlook(); });
+$('outlook-external').addEventListener('click', () => window.api.openExternal(OUTLOOK_URL));
 
 // ── BOOKINGS ───────────────────────────────────────────────────────────────
 let bookingsFilter = 'upcoming';
@@ -239,9 +423,8 @@ const BOOKINGS_SUBSTATUS_OPTIONS = ['5 Day Monitoring', 'Completed', 'Unschedule
   });
 })();
 let bookingsMonthOffset = 0; // 0 = current month
-// Set this to your own resource name before running
-const DEFAULT_BOOKINGS_RESOURCE = 'Your Name';
-let bookingsResource = DEFAULT_BOOKINGS_RESOURCE;
+let DEFAULT_BOOKINGS_RESOURCE = ''; // first team member; set once team is loaded
+let bookingsResource = '';
 const ALL_MEMBERS_VALUE = '__ALL__';
 
 function getMonthRange(offset) {
@@ -276,7 +459,8 @@ async function loadAllBookingStatusNames() {
 }
 
 function resourceFilterClause() {
-  if (bookingsResource === ALL_MEMBERS_VALUE) {
+  if (bookingsResource === ALL_MEMBERS_VALUE || !bookingsResource) {
+    if (!SCHEDULE_RESOURCES.length) return `Resource/name eq '__no_team_configured__'`;
     return '(' + SCHEDULE_RESOURCES.map(n => `Resource/name eq '${n.replace(/'/g, "''")}'`).join(' or ') + ')';
   }
   return `Resource/name eq '${bookingsResource.replace(/'/g, "''")}'`;
@@ -407,6 +591,7 @@ function renderBookings(records, customerMap = {}) {
       <td class="muted">${fmtDateTime(r.endtime)}</td>
       <td>${esc(customer)}</td>
       <td>${esc(r.name || '—')}</td>
+      <td class="muted">${esc(resource)}</td>
       <td>${statusBadge(status)}</td>
     </tr>`;
   }).join('');
@@ -434,10 +619,11 @@ document.querySelectorAll('#bookings-filter .chip').forEach(c => {
     document.querySelectorAll('#bookings-filter .chip').forEach(x => x.classList.remove('active'));
     c.classList.add('active');
     bookingsFilter = c.dataset.filter;
-    if (bookingsFilter === 'all') {
+    // An active search always pulls the full unscoped history, regardless of which date chip is selected
+    if (bookingsSearch || bookingsFilter === 'all') {
       loadAllBookingsForSearch();
     } else {
-      const monthKey = `month:${bookingsMonthOffset}`;
+      const monthKey = `month:${bookingsMonthOffset}:${bookingsResource}`;
       const cached = cache.bookingsMonths?.[monthKey];
       if (cached) renderBookings(cached, cache.bookingsCustomerMap || {});
       else loadBookings();
@@ -482,7 +668,7 @@ async function loadAllBookingsForSearch() {
       try {
         const CHUNK = 30;
         const chunks = [];
-        for (let i = 0; i < newWoIds.length; i += CHUNK) chunks.push(newWoIds.slice(i, i + CHUNK));
+        for (let i = 0; i < woIdsToFetch.length; i += CHUNK) chunks.push(woIdsToFetch.slice(i, i + CHUNK));
         const results = await Promise.all(chunks.map(chunk => {
           const filter = chunk.map(id => `msdyn_workorderid eq ${id}`).join(' or ');
           return xrmFetch('msdyn_workorder',
@@ -550,28 +736,26 @@ function getWeekRange(offset = 0) {
   return { monday, sunday };
 }
 
-// List the technician/resource names you want shown on the schedule board and team tab
-const SCHEDULE_RESOURCES = [
-  'Resource One','Resource Two','Resource Three'
-];
+// Team members are user-configurable and persisted in settings (see team manager)
+let SCHEDULE_RESOURCES = [];
 
 // ── Bookings team-member filter ──────────────────────────────────────────────
-(function initBookingsResourceFilter() {
+function populateBookingsResourceFilter() {
   const sel = $('bookings-resource-filter');
   sel.innerHTML = `<option value="${ALL_MEMBERS_VALUE}">All Members</option>` +
     SCHEDULE_RESOURCES.map(name =>
       `<option value="${esc(name)}">${esc(name)}</option>`
     ).join('');
-  sel.value = bookingsResource;
-  sel.addEventListener('change', e => {
-    bookingsResource = e.target.value;
-    if (bookingsFilter === 'all' || bookingsSearch) {
-      loadAllBookingsForSearch();
-    } else {
-      loadBookings();
-    }
-  });
-})();
+  sel.value = bookingsResource || ALL_MEMBERS_VALUE;
+}
+$('bookings-resource-filter').addEventListener('change', e => {
+  bookingsResource = e.target.value;
+  if (bookingsFilter === 'all' || bookingsSearch) {
+    loadAllBookingsForSearch();
+  } else {
+    loadBookings();
+  }
+});
 
 // Time-based layout constants — horizontal timeline
 const DAY_START_H    = 6;              // 6 AM
@@ -582,6 +766,15 @@ const PX_PER_MIN     = PX_PER_HOUR / 60;
 const DAY_W          = HOURS_PER_DAY * PX_PER_HOUR;
 const TOTAL_W        = 7 * DAY_W;
 const ROW_H          = 80;
+const WEEKLY_CAPACITY_HOURS = 40; // basis for utilization % (standard work week)
+
+function fmtBookedDuration(minutes) {
+  const h = Math.floor(minutes / 60);
+  const m = Math.round(minutes % 60);
+  if (h && m) return `${h}h ${m}m`;
+  if (h) return `${h}h`;
+  return `${m}m`;
+}
 
 function timeToX(iso, monday) {
   const d = new Date(iso);
@@ -631,6 +824,19 @@ async function renderSchedule(force = false) {
       cache.schedule     = records;
       cache.scheduleWeek = weekKey;
 
+      // Fetch approved time off for the same week (rendered as black bars, like Dynamics)
+      cache.timeoff = [];
+      try {
+        cache.timeoff = await xrmFetch('msdyn_timeoffrequest',
+          '?$select=msdyn_name,msdyn_starttime,msdyn_endtime,_msdyn_resource_value,statecode' +
+          `&$filter=msdyn_starttime le ${to} and msdyn_endtime ge ${from} and statecode eq 0` +
+          '&$orderby=msdyn_starttime asc&$top=500'
+        );
+      } catch (e) { console.warn('Time off fetch failed:', e); }
+
+      // Fetch PTO from the SharePoint "Time Off Calendar" (the real source of truth)
+      cache.sptimeoff = await fetchSharePointTimeOff(from, to);
+
       // Fetch customer names for all work orders in this batch
       const woIds = [...new Set(records.map(r => r._msdyn_workorder_value).filter(Boolean))];
       cache.customerMap = {};
@@ -671,6 +877,26 @@ async function renderSchedule(force = false) {
 
   const days = Array.from({ length: 7 }, (_, i) => {
     const d = new Date(monday); d.setDate(monday.getDate() + i); return d;
+  });
+
+  // Group approved time off by resource (list of {start,end} intervals)
+  const timeoffMap = {};
+  SCHEDULE_RESOURCES.forEach(r => { timeoffMap[r] = []; });
+  (cache.timeoff || []).forEach(t => {
+    if (!t.msdyn_starttime || !t.msdyn_endtime) return;
+    const res   = t['_msdyn_resource_value@OData.Community.Display.V1.FormattedValue'] || '';
+    const match = SCHEDULE_RESOURCES.find(n => res.toLowerCase().includes(n.toLowerCase()));
+    if (!match) return;
+    timeoffMap[match].push({ start: new Date(t.msdyn_starttime), end: new Date(t.msdyn_endtime), name: t.msdyn_name || 'Time Off' });
+  });
+  // Merge SharePoint PTO (matched to team members by name)
+  (cache.sptimeoff || []).forEach(t => {
+    if (!t.name || !t.start || !t.end) return;
+    const n = t.name.toLowerCase().trim();
+    const match = SCHEDULE_RESOURCES.find(r => r.toLowerCase().trim() === n)
+      || SCHEDULE_RESOURCES.find(r => { const p = r.toLowerCase().split(/\s+/); return p.length >= 2 && n.includes(p[0]) && n.includes(p[p.length - 1]); });
+    if (!match) return;
+    timeoffMap[match].push({ start: t.start, end: t.end, name: t.category || 'PTO' });
   });
 
   const resourceMap = {};
@@ -727,9 +953,20 @@ async function renderSchedule(force = false) {
     const laneCount = Math.max(1, laneEnds.length);
     const rowHeight = laneCount * ROW_H;
 
+    // Booked time + utilization % for the week
+    const bookedMin = allBookings.reduce((sum, b) => {
+      const s = new Date(b.starttime).getTime(), e = new Date(b.endtime).getTime();
+      return sum + (e > s ? (e - s) / 60000 : 0);
+    }, 0);
+    const utilPct = Math.round((bookedMin / (WEEKLY_CAPACITY_HOURS * 60)) * 100);
+
     let rowHtml = `<div class="sched-row">
       <div class="sched-resource-label" style="height:${rowHeight}px;">
-        <div class="resource-dot" style="background:${color}"></div>${esc(res)}
+        <div class="resource-dot" style="background:${color}"></div>
+        <div class="resource-label-text">
+          <div class="resource-name">${esc(res)}</div>
+          <div class="resource-util">${fmtBookedDuration(bookedMin)} booked · ${utilPct}%</div>
+        </div>
       </div>
       <div class="sched-timeline" style="width:${TOTAL_W}px;height:${rowHeight}px;">`;
 
@@ -744,6 +981,18 @@ async function renderSchedule(force = false) {
       for (let h = 1; h < HOURS_PER_DAY; h++) {
         rowHtml += `<div style="position:absolute;left:${dayLeft + h * PX_PER_HOUR}px;top:0;bottom:0;width:1px;background:rgba(37,43,59,.5);pointer-events:none;"></div>`;
       }
+    });
+
+    // Time off — solid black bar over each day the resource is off (like Dynamics)
+    days.forEach((d, di) => {
+      const dayStart = new Date(d); dayStart.setHours(0, 0, 0, 0);
+      const dayEnd   = new Date(d); dayEnd.setHours(23, 59, 59, 999);
+      const off = (timeoffMap[res] || []).find(t => t.start <= dayEnd && t.end >= dayStart);
+      if (!off) return;
+      const dayLeft = di * DAY_W;
+      rowHtml += `<div class="sched-timeoff" title="${esc(off.name)}" style="position:absolute;left:${dayLeft}px;width:${DAY_W}px;top:0;bottom:0;">
+        <span class="sched-timeoff-label">Time Off</span>
+      </div>`;
     });
 
     // Booking blocks — each fixed ROW_H tall, positioned in its lane
@@ -960,6 +1209,158 @@ function renderTeam(members) {
 
 $('team-refresh').addEventListener('click', () => loadTeam(true));
 
+// ── Team manager (add/remove members, persisted) ─────────────────────────────
+let teamDraft = [];
+function openTeamManager(firstRun = false) {
+  teamDraft = [...SCHEDULE_RESOURCES];
+  $('team-modal-sub').textContent = firstRun
+    ? 'Welcome! Add your team members by name, exactly as they appear in Dynamics. These drive the Schedule Board, Team, and bookings filters.'
+    : 'Add the resource names exactly as they appear in Dynamics. These drive the Schedule Board, Team, and bookings filters.';
+  renderTeamDraft();
+  $('team-modal').classList.remove('hidden');
+  $('team-modal-input').focus();
+}
+function renderTeamDraft() {
+  const list = $('team-modal-list');
+  if (!teamDraft.length) {
+    list.innerHTML = '<div class="team-mgr-empty">No team members yet — add some below.</div>';
+    return;
+  }
+  list.innerHTML = teamDraft.map((name, i) =>
+    `<div class="team-mgr-item"><span>${esc(name)}</span><button data-rm="${i}" title="Remove">&times;</button></div>`
+  ).join('');
+  list.querySelectorAll('[data-rm]').forEach(btn => {
+    btn.addEventListener('click', () => { teamDraft.splice(+btn.dataset.rm, 1); renderTeamDraft(); });
+  });
+}
+function addTeamDraftMember() {
+  const input = $('team-modal-input');
+  const name = input.value.trim();
+  if (!name) return;
+  if (teamDraft.some(n => n.toLowerCase() === name.toLowerCase())) { input.value = ''; return; }
+  teamDraft.push(name);
+  input.value = '';
+  renderTeamDraft();
+  input.focus();
+}
+$('team-edit').addEventListener('click', () => openTeamManager(false));
+$('team-modal-add').addEventListener('click', addTeamDraftMember);
+$('team-modal-input').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); addTeamDraftMember(); } });
+$('team-modal-close').addEventListener('click', () => $('team-modal').classList.add('hidden'));
+$('team-modal').addEventListener('click', e => { if (e.target.id === 'team-modal') $('team-modal').classList.add('hidden'); });
+$('team-modal-save').addEventListener('click', async () => {
+  appSettings.team = [...teamDraft];
+  await persistSettings();
+  // If the previously-selected bookings resource was removed, fall back to default
+  const removedCurrent = bookingsResource !== ALL_MEMBERS_VALUE && !teamDraft.includes(bookingsResource);
+  applyTeam(appSettings.team);
+  if (removedCurrent) bookingsResource = DEFAULT_BOOKINGS_RESOURCE;
+  // Team list affects schedule, team, and bookings — invalidate their caches
+  cache.schedule = cache.scheduleWeek = cache.team = null;
+  cache.bookingsAllByResource = {};
+  $('team-modal').classList.add('hidden');
+  if (xrmReady) loadTab(activeTab);
+});
+
+// ── ASSETS ───────────────────────────────────────────────────────────────────
+let assetsSearch = '', assetsSearchTimer = null, assetsRowMap = {};
+
+async function searchAssets(q) {
+  showState('assets', 'loading');
+  try {
+    const safe = q.replace(/'/g, "''");
+    const records = await xrmFetch('msdyn_customerasset',
+      `?$select=msdyn_customerassetid,msdyn_name,wc_assettag,msdyn_assettag,wc_seriallotnumber,wc_knumber` +
+      `&$filter=contains(wc_assettag,'${safe}') or contains(msdyn_assettag,'${safe}') or contains(wc_seriallotnumber,'${safe}')` +
+      `&$orderby=msdyn_name asc&$top=200`
+    );
+    renderAssets(records);
+  } catch (e) { showState('assets', 'empty'); console.error('Assets search error:', e); }
+}
+
+function renderAssets(records) {
+  $('assets-count').textContent = records.length;
+  if (records.length === 0) { showState('assets', 'empty'); return; }
+  assetsRowMap = {};
+  $('assets-body').innerHTML = records.map((r, i) => {
+    assetsRowMap[i] = r;
+    const tag = r.wc_assettag || r.msdyn_assettag || '—';
+    return `<tr data-idx="${i}" class="row-clickable">
+      <td><strong>${esc(r.msdyn_name || '—')}</strong></td>
+      <td class="muted">${esc(tag)}</td>
+      <td class="muted">${esc(r.wc_knumber || '—')}</td>
+      <td class="muted">${esc(r.wc_seriallotnumber || '—')}</td>
+    </tr>`;
+  }).join('');
+  $('assets-body').querySelectorAll('tr[data-idx]').forEach(tr => {
+    tr.addEventListener('click', () => openAssetDetail(assetsRowMap[+tr.dataset.idx]));
+  });
+  showState('assets', 'table');
+}
+
+const ASSETS_DETAIL_SELECT = 'msdyn_customerassetid,msdyn_name,wc_assettag,msdyn_assettag,wc_seriallotnumber,' +
+  'statuscode,wc_knumber,msdyn_manufacturingdate,_msdyn_parentasset_value,_wc_warrantyservicecontract_value,' +
+  '_msdyn_masterasset_value,_msdyn_product_value,_wc_manufacturer_value,_msdyn_workorderproduct_value';
+
+function fv(obj, field) {
+  if (!obj) return '';
+  return obj[`${field}@OData.Community.Display.V1.FormattedValue`] || obj[field] || '';
+}
+
+async function openAssetDetail(row) {
+  const assetId = row?.msdyn_customerassetid;
+  if (!assetId) return;
+  const modal = $('asset-modal');
+  const body  = $('asset-modal-body');
+  body.innerHTML = '<div class="loading-state"><div class="spinner"></div></div>';
+  modal.classList.remove('hidden');
+
+  try {
+    const records = await xrmFetch('msdyn_customerasset', `?$select=${ASSETS_DETAIL_SELECT}&$filter=msdyn_customerassetid eq ${assetId}`);
+    const a = records[0];
+    if (!a) { body.innerHTML = '<div class="am-empty">Asset not found.</div>'; return; }
+
+    const tag = a.wc_assettag || a.msdyn_assettag || '—';
+
+    body.innerHTML = `
+      <div class="am-title">${esc(a.msdyn_name || '—')}</div>
+      <div class="am-sub">Asset Tag: ${esc(tag)}</div>
+
+      <div class="am-grid">
+        <div><div class="am-field-label">Asset Status</div><div class="am-field-value">${esc(fv(a,'statuscode')||'—')}</div></div>
+        <div><div class="am-field-label">K Number</div><div class="am-field-value">${esc(a.wc_knumber||'—')}</div></div>
+        <div><div class="am-field-label">Parent Asset</div><div class="am-field-value">${esc(fv(a,'_msdyn_parentasset_value')||'—')}</div></div>
+        <div><div class="am-field-label">Manufacturing Date</div><div class="am-field-value">${esc(fmtDate(a.msdyn_manufacturingdate)||'—')}</div></div>
+        <div><div class="am-field-label">Warranty Service Contract</div><div class="am-field-value">${esc(fv(a,'_wc_warrantyservicecontract_value')||'—')}</div></div>
+        <div><div class="am-field-label">Top-Level Asset</div><div class="am-field-value">${esc(fv(a,'_msdyn_masterasset_value')||'—')}</div></div>
+        <div><div class="am-field-label">Product</div><div class="am-field-value">${esc(fv(a,'_msdyn_product_value')||'—')}</div></div>
+        <div><div class="am-field-label">Manufacturer</div><div class="am-field-value">${esc(fv(a,'_wc_manufacturer_value')||'—')}</div></div>
+        <div><div class="am-field-label">Work Order Product</div><div class="am-field-value">${esc(fv(a,'_msdyn_workorderproduct_value')||'—')}</div></div>
+        <div><div class="am-field-label">Serial/Lot #</div><div class="am-field-value">${esc(a.wc_seriallotnumber||'—')}</div></div>
+      </div>
+    `;
+  } catch (e) {
+    body.innerHTML = '<div class="am-empty">Failed to load asset details.</div>';
+    console.error('Asset detail error:', e);
+  }
+}
+
+$('asset-modal-close').addEventListener('click', () => $('asset-modal').classList.add('hidden'));
+$('asset-modal').addEventListener('click', e => { if (e.target.id === 'asset-modal') $('asset-modal').classList.add('hidden'); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') $('asset-modal').classList.add('hidden'); });
+
+$('assets-search').addEventListener('input', e => {
+  assetsSearch = e.target.value.trim();
+  clearTimeout(assetsSearchTimer);
+  assetsSearchTimer = setTimeout(() => {
+    if (assetsSearch.length >= 2) searchAssets(assetsSearch);
+    else showState('assets', 'empty');
+  }, 300);
+});
+$('assets-refresh').addEventListener('click', () => {
+  if (assetsSearch.length >= 2) searchAssets(assetsSearch);
+});
+
 // ── Show/hide states ───────────────────────────────────────────────────────
 function showState(tab, state) {
   const loading = $(`${tab}-loading`);
@@ -1075,5 +1476,144 @@ document.addEventListener('mouseout', e => {
   if (e.target.closest('.booking-block[data-key]')) schedTip.classList.remove('visible');
 });
 
+// ── Quick-create: internal "Travel to Home" work order ───────────────────────
+// Template values captured from a real travel work order (WO-70403).
+const TRAVEL_WO = {
+  serviceaccount:  'YOUR-SERVICE-ACCOUNT-GUID', // service account
+  incidenttype:    'YOUR-INCIDENT-TYPE-GUID', // incident type
+  priority:        'YOUR-PRIORITY-GUID', // Low
+  pricelist:       'YOUR-PRICE-LIST-GUID', // Mid
+  serviceterritory:'YOUR-SERVICE-TERRITORY-GUID', // service territory
+  problem:         'Travel to home.',
+};
+const TRAVEL_BOOKING_STATUS  = 'YOUR-SCHEDULED-BOOKING-STATUS-GUID'; // Completed
+const TRAVEL_BOOKING_SETUPMD = 'YOUR-BOOKING-SETUP-METADATA-GUID'; // msdyn_workorder booking setup metadata
+const TRAVEL_DURATION_MIN    = 60;
+
+async function currentUserResourceId() {
+  try {
+    const raw = await apiWv.executeJavaScript('Xrm.Utility.getGlobalContext().userSettings.userId');
+    const uid = String(raw || '').replace(/[{}]/g, '');
+    if (!uid) return null;
+    const res = await xrmFetch('bookableresource', `?$select=bookableresourceid&$filter=_userid_value eq ${uid}&$top=1`);
+    return res[0]?.bookableresourceid || null;
+  } catch (_) { return null; }
+}
+
+async function createTravelWorkOrder() {
+  const btn = $('travel-wo-btn');
+  if (!xrmReady) { toast('Not connected to Dynamics yet', true); return; }
+  btn.disabled = true; const label = btn.textContent; btn.textContent = 'Creating…';
+  try {
+    // 1) Create the work order (entity-set names resolved from metadata to avoid guessing)
+    const nav = await getNavPropMap('msdyn_workorder');
+    const woPayload = { wc_workorderproblemdescription: TRAVEL_WO.problem };
+    const bind = async (attr, id) => {
+      const rel = nav[attr];
+      if (!rel) return;
+      const set = await entitySetOf(rel.target);
+      woPayload[`${rel.nav}@odata.bind`] = `/${set}(${id})`;
+    };
+    await bind('msdyn_serviceaccount',     TRAVEL_WO.serviceaccount);
+    await bind('msdyn_primaryincidenttype',TRAVEL_WO.incidenttype);
+    await bind('msdyn_priority',           TRAVEL_WO.priority);
+    await bind('msdyn_pricelist',          TRAVEL_WO.pricelist);
+    await bind('msdyn_serviceterritory',   TRAVEL_WO.serviceterritory);
+    // Reported By Contact = the signed-in user's contact record (the signed-in user)
+    try {
+      const uname = String(await apiWv.executeJavaScript('Xrm.Utility.getGlobalContext().getUserName()') || '').trim();
+      if (uname && nav.msdyn_reportedbycontact) {
+        const contacts = await xrmFetch('contact', `?$select=contactid&$filter=fullname eq '${uname.replace(/'/g,"''")}'&$top=1`);
+        if (contacts[0]) await bind('msdyn_reportedbycontact', contacts[0].contactid);
+      }
+    } catch (_) {}
+    const woId = await xrmCreate('msdyn_workorder', woPayload);
+    let woName = 'work order';
+    try { woName = (await xrmRetrieve('msdyn_workorder', woId, '?$select=msdyn_name')).msdyn_name || woName; } catch (_) {}
+
+    // 2) Create the booking — replicate the Dynamics booking form exactly:
+    //    status "Scheduled", arrival = start, resource = current user, and let the
+    //    platform assign Booking Setup Metadata (do NOT bind it, which triggers the
+    //    append-permission check that blocked the earlier attempt).
+    let bookingNote = '';
+    try {
+      const resourceId = await currentUserResourceId();
+      if (!resourceId) throw new Error('Could not find your bookable resource');
+      const scheduled = await xrmFetch('bookingstatus', `?$select=bookingstatusid&$filter=name eq 'Scheduled'&$orderby=createdon asc&$top=1`);
+      const schedStatusId = scheduled[0]?.bookingstatusid;
+      const bnav = await getNavPropMap('bookableresourcebooking');
+      const start = new Date();
+      const end   = new Date(start.getTime() + TRAVEL_DURATION_MIN * 60000);
+      const bPayload = {
+        starttime: start.toISOString(),
+        endtime:   end.toISOString(),
+        msdyn_actualarrivaltime: start.toISOString(),
+        duration:  TRAVEL_DURATION_MIN,
+      };
+      const bbind = async (attr, id) => {
+        const rel = bnav[attr];
+        if (!rel || !id) return;
+        const set = await entitySetOf(rel.target);
+        bPayload[`${rel.nav}@odata.bind`] = `/${set}(${id})`;
+      };
+      await bbind('msdyn_workorder', woId);
+      await bbind('resource',        resourceId);
+      await bbind('bookingstatus',   schedStatusId);
+      await xrmCreate('bookableresourcebooking', bPayload);
+      bookingNote = ' + booking';
+    } catch (be) {
+      console.warn('Travel booking failed:', be.message);
+      bookingNote = ' (work order only — booking must be added manually: ' + be.message.slice(0, 80) + ')';
+    }
+
+    toast(`Created ${woName}${bookingNote}`);
+    if (activeTab === 'bookings') loadBookings(true);
+    if (activeTab === 'schedule') renderSchedule(true);
+  } catch (e) {
+    toast('Failed to create travel work order: ' + e.message, true);
+  } finally {
+    btn.disabled = false; btn.textContent = label;
+  }
+}
+$('travel-wo-btn').addEventListener('click', createTravelWorkOrder);
+
+// ── Auto-update ──────────────────────────────────────────────────────────────
+let pendingUpdateAsset = null;
+async function checkForUpdates() {
+  if (!window.api.checkForUpdate) return;
+  try {
+    const r = await window.api.checkForUpdate();
+    if (r?.ok && r.updateAvailable && r.asset) {
+      pendingUpdateAsset = r.asset;
+      $('update-toast-sub').textContent = `Version ${r.latest.replace(/^v/,'')} is ready (you have ${r.current}).`;
+      $('update-toast').classList.remove('hidden');
+    }
+  } catch (_) {}
+}
+window.api.onUpdateProgress?.(p => {
+  $('update-toast-progress').classList.remove('hidden');
+  $('update-toast-bar').style.width = p + '%';
+});
+$('update-toast-dismiss').addEventListener('click', () => $('update-toast').classList.add('hidden'));
+$('update-toast-install').addEventListener('click', async () => {
+  if (!pendingUpdateAsset) return;
+  const btn = $('update-toast-install');
+  btn.disabled = true; btn.textContent = 'Downloading…';
+  $('update-toast-dismiss').disabled = true;
+  $('update-toast-sub').textContent = 'Downloading update — the app will restart automatically.';
+  $('update-toast-progress').classList.remove('hidden');
+  try {
+    await window.api.applyUpdate(pendingUpdateAsset);
+    // App will relaunch via the updater; if we get here, it's still working.
+    btn.textContent = 'Installing…';
+  } catch (e) {
+    $('update-toast-sub').textContent = 'Update failed: ' + e.message;
+    btn.disabled = false; btn.textContent = 'Retry';
+    $('update-toast-dismiss').disabled = false;
+  }
+});
+
 // ── Boot ───────────────────────────────────────────────────────────────────
 init();
+checkForUpdates();
+window.api.getVersion?.().then(v => { if (v) $('app-version').textContent = 'v' + v; });

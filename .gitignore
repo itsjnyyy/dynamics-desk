@@ -1,5 +1,5 @@
 node_modules/
 dist/
-out/
-*.log
-.DS_Store
+dist-packaged/
+dist-installer/
+scripts/release-token.txt

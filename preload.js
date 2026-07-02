@@ -10,4 +10,9 @@ contextBridge.exposeInMainWorld('api', {
   openWorkOrderDirect: (workOrderId, orgUrl, title) => ipcRenderer.invoke('open-workorder-direct', { workOrderId, orgUrl, title }),
   openContact: (contactId, orgUrl, title) => ipcRenderer.invoke('open-contact', { contactId, orgUrl, title }),
   openTeamMember: (name, orgUrl, title) => ipcRenderer.invoke('open-team-member', { name, orgUrl, title }),
+  openExternal: (url) => ipcRenderer.invoke('open-external', url),
+  getVersion: () => ipcRenderer.invoke('get-version'),
+  checkForUpdate: () => ipcRenderer.invoke('updater-check'),
+  applyUpdate:    (asset) => ipcRenderer.invoke('updater-apply', asset),
+  onUpdateProgress: (cb) => ipcRenderer.on('updater-progress', (_, p) => cb(p)),
 });

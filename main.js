@@ -1,8 +1,32 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, nativeTheme } = require('electron');
 const path = require('path');
-const Store = require('electron-store');
+const fs = require('fs');
+const updater = require('./updater');
 
-const store = new Store();
+// Report a dark color scheme to embedded web content (Outlook on the web honors
+// prefers-color-scheme, so this makes the Outlook tab render in dark mode).
+nativeTheme.themeSource = 'dark';
+
+// Lightweight JSON settings store (replaces electron-store to avoid packaging issues)
+const store = {
+  _file: null,
+  _data: {},
+  _init() {
+    if (this._file) return;
+    this._file = path.join(app.getPath('userData'), 'settings.json');
+    try { this._data = JSON.parse(fs.readFileSync(this._file, 'utf8')); }
+    catch (_) { this._data = {}; }
+  },
+  get(key, fallback = null) {
+    this._init();
+    return key in this._data ? this._data[key] : fallback;
+  },
+  set(key, value) {
+    this._init();
+    this._data[key] = value;
+    try { fs.writeFileSync(this._file, JSON.stringify(this._data, null, 2)); } catch (_) {}
+  },
+};
 const APP_ICON = path.join(__dirname, 'assets', 'icon.ico');
 let win;
 
@@ -33,6 +57,11 @@ app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(
 
 ipcMain.handle('get-settings', () => store.get('settings', null));
 ipcMain.handle('save-settings', (_, s) => { store.set('settings', s); return true; });
+
+ipcMain.handle('get-version', () => app.getVersion());
+ipcMain.handle('updater-check', () => updater.checkForUpdates());
+ipcMain.handle('updater-apply', (e, asset) =>
+  updater.downloadAndApply(asset, p => e.sender.send('updater-progress', p)));
 ipcMain.handle('minimize',  () => win.minimize());
 ipcMain.handle('maximize',  () => win.isMaximized() ? win.unmaximize() : win.maximize());
 ipcMain.handle('close',     () => win.close());

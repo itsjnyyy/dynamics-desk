@@ -1,0 +1,5 @@
+{
+  "owner": "YOUR-GITHUB-USERNAME",
+  "repo": "YOUR-RELEASES-REPO",
+  "token": "PASTE-READ-ONLY-FINEGRAINED-TOKEN-HERE"
+}

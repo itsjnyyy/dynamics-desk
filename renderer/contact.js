@@ -48,7 +48,7 @@ async function init() {
     $('c-email').textContent  = c.emailaddress1 || '—';
     $('c-account').textContent = fv(c, '_parentcustomerid_value') || '—';
 
-    const APP_ID = 'YOUR-MODEL-DRIVEN-APP-ID'; // find this in your app's URL in Dynamics
+    const APP_ID = 'YOUR-MODEL-DRIVEN-APP-ID';
     const url = `${orgUrl}/main.aspx?appid=${APP_ID}&pagetype=entityrecord&etn=contact&id=${contactId}`;
     $('open-dynamics-btn').addEventListener('click', () => window.api.openExternal(url));
 

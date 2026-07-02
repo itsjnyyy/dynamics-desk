@@ -58,6 +58,85 @@ async function xrmList(entity, qs) {
   if (!Array.isArray(r)) throw new Error(r?.__err||'Unknown error');
   return r;
 }
+window.__dumpFields = async function(entityLogicalName, prefix) {
+  const url = `${orgUrl}/api/data/v9.2/EntityDefinitions(LogicalName='${entityLogicalName}')/Attributes?$select=LogicalName,DisplayName,AttributeType`;
+  const json = await apiWv.executeJavaScript(
+    `fetch(${JSON.stringify(url)}, {headers:{Accept:'application/json'}}).then(r=>r.json()).then(d=>JSON.stringify(d)).catch(e=>JSON.stringify({__err:e.message}))`
+  );
+  const r = JSON.parse(json);
+  if (r?.__err) { console.error(r.__err); return; }
+  let out = r.value.map(a => ({
+    LogicalName: a.LogicalName,
+    Label: a.DisplayName?.UserLocalizedLabel?.Label || '',
+    Type: a.AttributeType
+  })).sort((a,b) => a.LogicalName.localeCompare(b.LogicalName));
+  if (prefix) out = out.filter(a => (a.LogicalName.startsWith(prefix) || a.LogicalName.includes(prefix) || a.Label.toLowerCase().includes(prefix.toLowerCase())) && a.Label);
+  console.log(JSON.stringify(out));
+  return out;
+};
+window.__dumpWOProductFields = async function(prefix) {
+  const url = `${orgUrl}/api/data/v9.2/EntityDefinitions(LogicalName='msdyn_workorderproduct')/Attributes?$select=LogicalName,DisplayName,AttributeType`;
+  const json = await apiWv.executeJavaScript(
+    `fetch(${JSON.stringify(url)}, {headers:{Accept:'application/json'}}).then(r=>r.json()).then(d=>JSON.stringify(d)).catch(e=>JSON.stringify({__err:e.message}))`
+  );
+  const r = JSON.parse(json);
+  if (r?.__err) { console.error(r.__err); return; }
+  let out = r.value.map(a => ({
+    LogicalName: a.LogicalName,
+    Label: a.DisplayName?.UserLocalizedLabel?.Label || '',
+    Type: a.AttributeType
+  })).sort((a,b) => a.LogicalName.localeCompare(b.LogicalName));
+  if (prefix) out = out.filter(a => (a.LogicalName.startsWith(prefix) || a.LogicalName.includes(prefix) || a.Label.toLowerCase().includes(prefix.toLowerCase())) && a.Label);
+  console.log(JSON.stringify(out));
+  return out;
+};
+window.__dumpOptionSet = async function(attributeLogicalName) {
+  const url = `${orgUrl}/api/data/v9.2/EntityDefinitions(LogicalName='msdyn_workorderproduct')/Attributes(LogicalName='${attributeLogicalName}')/Microsoft.Dynamics.CRM.PicklistAttributeMetadata?$select=LogicalName&$expand=OptionSet`;
+  const json = await apiWv.executeJavaScript(
+    `fetch(${JSON.stringify(url)}, {headers:{Accept:'application/json'}}).then(r=>r.json()).then(d=>JSON.stringify(d)).catch(e=>JSON.stringify({__err:e.message}))`
+  );
+  const r = JSON.parse(json);
+  if (r?.__err) { console.error(r.__err); return; }
+  const out = (r.OptionSet?.Options || []).map(o => ({ Value: o.Value, Label: o.Label?.UserLocalizedLabel?.Label || '' }));
+  console.log(JSON.stringify(out, null, 2));
+  return out;
+};
+// Diagnostics: find the target entity of a lookup, and dump fields of any entity
+window.__lookupTargets = async function(entity, attr) {
+  const url = `${orgUrl}/api/data/v9.2/EntityDefinitions(LogicalName='${entity}')/Attributes(LogicalName='${attr}')/Microsoft.Dynamics.CRM.LookupAttributeMetadata?$select=Targets`;
+  const json = await apiWv.executeJavaScript(
+    `fetch(${JSON.stringify(url)}, {headers:{Accept:'application/json'}}).then(r=>r.json()).then(d=>JSON.stringify(d)).catch(e=>JSON.stringify({__err:e.message}))`
+  );
+  const r = JSON.parse(json);
+  console.log('Targets:', JSON.stringify(r.Targets || r));
+  return r.Targets || r;
+};
+window.__dumpEntity = async function(entity, prefix) {
+  const url = `${orgUrl}/api/data/v9.2/EntityDefinitions(LogicalName='${entity}')/Attributes?$select=LogicalName,DisplayName,AttributeType`;
+  const json = await apiWv.executeJavaScript(
+    `fetch(${JSON.stringify(url)}, {headers:{Accept:'application/json'}}).then(r=>r.json()).then(d=>JSON.stringify(d)).catch(e=>JSON.stringify({__err:e.message}))`
+  );
+  const r = JSON.parse(json);
+  if (!Array.isArray(r?.value)) { console.error('err', json.slice(0,300)); return; }
+  let out = r.value.map(a => ({ LogicalName: a.LogicalName, Label: a.DisplayName?.UserLocalizedLabel?.Label || '', Type: a.AttributeType }))
+    .sort((a,b)=>a.LogicalName.localeCompare(b.LogicalName));
+  if (prefix) out = out.filter(a => (a.LogicalName.includes(prefix) || a.Label.toLowerCase().includes(prefix.toLowerCase())) && a.Label);
+  console.log(JSON.stringify(out));
+  return out;
+};
+window.__dumpOptionSetsOf = async function(entity, ...attrs) {
+  const result = {};
+  for (const attr of attrs) {
+    const url = `${orgUrl}/api/data/v9.2/EntityDefinitions(LogicalName='${entity}')/Attributes(LogicalName='${attr}')/Microsoft.Dynamics.CRM.PicklistAttributeMetadata?$select=LogicalName&$expand=OptionSet`;
+    const json = await apiWv.executeJavaScript(
+      `fetch(${JSON.stringify(url)}, {headers:{Accept:'application/json'}}).then(r=>r.json()).then(d=>JSON.stringify(d)).catch(e=>JSON.stringify({__err:e.message}))`
+    );
+    const r = JSON.parse(json);
+    result[attr] = (r.OptionSet?.Options || []).map(o => ({ Value: o.Value, Label: o.Label?.UserLocalizedLabel?.Label || '' }));
+  }
+  console.log(JSON.stringify(result, null, 2));
+  return result;
+};
 async function getLookupNavProperty(entityLogicalName, lookupLogicalName) {
   const url = `${orgUrl}/api/data/v9.2/EntityDefinitions(LogicalName='${entityLogicalName}')/ManyToOneRelationships?$filter=ReferencingAttribute eq '${lookupLogicalName}'&$select=ReferencingEntityNavigationPropertyName`;
   const json = await apiWv.executeJavaScript(
@@ -219,7 +298,7 @@ function buildSubstatusDropdown() {
 }
 
 function wireOpenDynamics() {
-  const APP_ID = 'YOUR-MODEL-DRIVEN-APP-ID'; // find this in your app's URL in Dynamics
+  const APP_ID = 'YOUR-MODEL-DRIVEN-APP-ID';
   const url = woId
     ? `${orgUrl}/main.aspx?appid=${APP_ID}&pagetype=entityrecord&etn=msdyn_workorder&id=${woId}`
     : `${orgUrl}/main.aspx?appid=${APP_ID}&pagetype=entityrecord&etn=bookableresourcebooking&id=${bookingId}`;
@@ -252,12 +331,7 @@ function renderAll() {
     // Booking fields
     $('f-start').value   = isoToLocal(booking.starttime);
     $('f-end').value     = isoToLocal(booking.endtime);
-    $('f-arrival').value = isoToLocal(
-      Object.entries(booking).find(([k,v]) => !k.includes('@') && (k.toLowerCase().includes('arriv') || k.toLowerCase().includes('actual')) && v)?.[1] || ''
-    );
-    // debug: show candidate fields in placeholder
-    const candidates = Object.entries(booking).filter(([k,v]) => !k.includes('@') && typeof v === 'string' && v.includes('T') && v.includes('Z')).map(([k,v])=>`${k}: ${v}`).join(' | ');
-    if (!$('f-arrival').value) $('f-arrival').title = candidates;
+    $('f-arrival').value = isoToLocal(booking.msdyn_actualarrivaltime || '');
     set('d-duration',  fmtDuration(booking.duration));
   }
 
@@ -336,7 +410,7 @@ async function save() {
     if (snap._bookingStatus) bPatch['BookingStatus@odata.bind'] = `/bookingstatuses(${snap._bookingStatus})`;
     if (snap._starttime)      bPatch.starttime          = new Date(snap._starttime).toISOString();
     if (snap._endtime)        bPatch.endtime            = new Date(snap._endtime).toISOString();
-    if (snap._actualarrival)  bPatch.msdyn_actualarrival = new Date(snap._actualarrival).toISOString();
+    if (snap._actualarrival)  bPatch.msdyn_actualarrivaltime = new Date(snap._actualarrival).toISOString();
     if (snap._resource)       bPatch['Resource@odata.bind'] = `/bookableresources(${snap._resource})`;
     if (Object.keys(bPatch).length) await xrmUpdate('bookableresourcebooking', bookingId, bPatch);
 
@@ -360,7 +434,7 @@ async function save() {
     }
     if (snap._starttime)     booking.starttime           = new Date(snap._starttime).toISOString();
     if (snap._endtime)       booking.endtime             = new Date(snap._endtime).toISOString();
-    if (snap._actualarrival) booking.msdyn_actualarrival = new Date(snap._actualarrival).toISOString();
+    if (snap._actualarrival) booking.msdyn_actualarrivaltime = new Date(snap._actualarrival).toISOString();
     if (snap._resource)     booking._resource_value = snap._resource;
     if (wo) Object.assign(wo, wPatch);
     if (wo && snap._substatus) wo._msdyn_substatus_value = snap._substatus;
@@ -383,31 +457,92 @@ function discard() {
 }
 
 // ── Assigned Engineers ────────────────────────────────────────────────────────
+function resourceOptions(selectedId) {
+  return resources.map(r =>
+    `<option value="${r.bookableresourceid}"${r.bookableresourceid === selectedId ? ' selected' : ''}>${esc(r.name)}</option>`
+  ).join('');
+}
+
 async function loadEngineers() {
   const el = $('d-engineers-list');
   if (!el) return;
+  if (!resources.length) {
+    try { resources = await xrmList('bookableresource', '?$select=bookableresourceid,name&$orderby=name asc'); } catch (_) {}
+  }
   const bookings = await xrmList('bookableresourcebooking',
-    `?$select=bookableresourcebookingid,name,starttime,endtime&$expand=Resource($select=name)&$filter=_msdyn_workorder_value eq ${woId}&$orderby=starttime asc`);
+    `?$select=bookableresourcebookingid,name,starttime,endtime,_resource_value&$expand=Resource($select=name)&$filter=_msdyn_workorder_value eq ${woId}&$orderby=starttime asc`);
 
-  if (!bookings.length) { el.innerHTML = `<div class="field-value dim">No engineers assigned</div>`; return; }
-
-  el.innerHTML = bookings.map((b, i) => {
+  const rowsHtml = bookings.length ? bookings.map((b, i) => {
     const name = b.Resource?.name || 'Unassigned';
     const time = `${fmtDate(b.starttime)} – ${fmtDate(b.endtime)}`;
     return `
-      <div class="engineer-row" data-idx="${i}" style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:8px 12px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;">
-        <span style="font-size:13px;">${esc(name)}</span>
+      <div class="engineer-row" data-idx="${i}" data-bid="${b.bookableresourcebookingid}" data-res="${b._resource_value || ''}"
+        style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:8px 12px;display:flex;justify-content:space-between;align-items:center;gap:8px;">
+        <span class="eng-open" style="font-size:13px;cursor:pointer;flex:1;">${esc(name)}</span>
         <span style="font-size:11px;color:var(--muted2);">${esc(time)}</span>
+        <button class="btn btn-ghost btn-sm eng-transfer" title="Transfer to another engineer" style="padding:2px 8px;font-size:11px;">Transfer</button>
       </div>`;
-  }).join('');
+  }).join('') : `<div class="field-value dim">No engineers assigned</div>`;
 
-  el.querySelectorAll('.engineer-row').forEach(row => {
-    row.addEventListener('mouseenter', () => row.style.borderColor = 'var(--accent)');
-    row.addEventListener('mouseleave', () => row.style.borderColor = 'var(--border)');
-    row.addEventListener('click', () => {
-      const b = bookings[+row.dataset.idx];
+  el.innerHTML = rowsHtml + `
+    <div id="add-engineer-bar" style="display:flex;gap:8px;align-items:center;margin-top:4px;">
+      <select id="add-engineer-select" class="field-input" style="flex:1;"><option value="">Add another engineer…</option>${resourceOptions('')}</select>
+      <button class="btn btn-ghost btn-sm" id="add-engineer-btn" disabled>Add</button>
+    </div>`;
+
+  // Open a booking in its own window
+  el.querySelectorAll('.engineer-row .eng-open').forEach(span => {
+    span.addEventListener('click', () => {
+      const b = bookings[+span.closest('.engineer-row').dataset.idx];
       window.api.openWorkOrder(b.bookableresourcebookingid, orgUrl, b.Resource?.name || b.name || 'Booking');
     });
+  });
+
+  // Inline transfer: swap the row for a resource picker
+  el.querySelectorAll('.eng-transfer').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const row = btn.closest('.engineer-row');
+      const bid = row.dataset.bid, curRes = row.dataset.res;
+      row.innerHTML = `
+        <select class="field-input eng-transfer-sel" style="flex:1;">${resourceOptions(curRes)}</select>
+        <button class="btn btn-primary btn-sm eng-transfer-confirm" style="padding:2px 8px;font-size:11px;">Save</button>
+        <button class="btn btn-ghost btn-sm eng-transfer-cancel" style="padding:2px 8px;font-size:11px;">Cancel</button>`;
+      row.querySelector('.eng-transfer-cancel').addEventListener('click', loadEngineers);
+      row.querySelector('.eng-transfer-confirm').addEventListener('click', async () => {
+        const newRes = row.querySelector('.eng-transfer-sel').value;
+        if (!newRes || newRes === curRes) { loadEngineers(); return; }
+        try {
+          await xrmUpdate('bookableresourcebooking', bid, { 'Resource@odata.bind': `/bookableresources(${newRes})` });
+          toast('Engineer transferred');
+          await loadEngineers();
+        } catch (e) { toast('Transfer failed: ' + e.message, true); loadEngineers(); }
+      });
+    });
+  });
+
+  // Add another engineer = duplicate this booking onto another resource (same work order)
+  const addSel = $('add-engineer-select'), addBtn = $('add-engineer-btn');
+  addSel.addEventListener('change', () => { addBtn.disabled = !addSel.value; });
+  addBtn.addEventListener('click', async () => {
+    const resId = addSel.value;
+    if (!resId || !woId) return;
+    addBtn.disabled = true; addBtn.textContent = 'Adding…';
+    try {
+      const payload = {
+        'msdyn_workorder@odata.bind': `/msdyn_workorders(${woId})`,
+        'Resource@odata.bind': `/bookableresources(${resId})`,
+      };
+      if (booking?.starttime) payload.starttime = booking.starttime;
+      if (booking?.endtime)   payload.endtime   = booking.endtime;
+      if (booking?.duration != null) payload.duration = booking.duration;
+      if (booking?._bookingstatus_value) payload['BookingStatus@odata.bind'] = `/bookingstatuses(${booking._bookingstatus_value})`;
+      await xrmCreate('bookableresourcebooking', payload);
+      toast('Engineer added to work order');
+      await loadEngineers();
+    } catch (e) {
+      toast('Add failed: ' + e.message, true);
+      addBtn.disabled = false; addBtn.textContent = 'Add';
+    }
   });
 }
 
@@ -419,7 +554,8 @@ document.querySelectorAll('.wo-tab').forEach(btn => {
     btn.classList.add('active');
     $(`panel-${btn.dataset.tab}`).classList.remove('hidden');
     if (btn.dataset.tab==='tasks'    && !tasksLoaded)    loadTasks();
-    if (btn.dataset.tab==='products' && !productsLoaded) { initProdSearch(); loadProducts(); }
+    if (btn.dataset.tab==='products') { initProdSearch(); loadProducts(); }
+    if (btn.dataset.tab==='timeline') loadTimeline();
     if (btn.dataset.tab==='notes'    && !notesLoaded)    loadNotes();
     if (btn.dataset.tab==='details') { /* always loaded */ }
   });
@@ -463,66 +599,212 @@ async function loadTasks() {
   } catch(e) { $('tasks-body').innerHTML=`<tr><td colspan="5"><div class="empty-msg">Error: ${esc(e.message)}</div></td></tr>`; }
 }
 
-// ── Products ──────────────────────────────────────────────────────────────────
+// ── Parts Request ──────────────────────────────────────────────────────────────
+let partsRequestRows = [];
+let draftParts = [];
+let cr217WorkorderNav = null, partNameNav = null;
+
+const SHIP_TO_LABELS = {
+  '100000007':'Location 1','948000000':'Location 2','948000001':'Warehouse 1',
+  '948000002':'Customer Site','100000008':'Warehouse 2','948000004':'Engineer Home',
+  '948000005':'Location 3','948000006':'Location 4','948000003':'Location 5','100000009':'Location 6'
+};
+
 async function loadProducts() {
-  if (!woId) { $('products-body').innerHTML=`<tr><td colspan="4"><div class="empty-msg">No work order linked</div></td></tr>`; return; }
+  if (!woId) { $('products-body').innerHTML=`<tr><td colspan="5"><div class="empty-msg">No work order linked</div></td></tr>`; return; }
   try {
-    const rows = await xrmList('msdyn_workorderproduct',
-      `?$select=msdyn_name,_msdyn_product_value,msdyn_quantity,msdyn_linestatus,_msdyn_unit_value&$filter=_msdyn_workorder_value eq ${woId}`);
+    // Pull parts requests (linked either by regardingobjectid or the cr217_workorder lookup)
+    // AND work order products, so anything ordered on this work order shows up regardless of
+    // how it was created. Separate queries avoid a fragile OR on the polymorphic regarding field.
+    const prSelect = '?$select=activityid,subject,wc_partnumber,wc_quantity,_wc_partname_value,wc_shiptolocation,cr217_partsrequeststatus,createdon';
+    const [byReg, byWo, prods] = await Promise.all([
+      xrmList('wc_partsrequest', `${prSelect}&$filter=_regardingobjectid_value eq ${woId}&$orderby=createdon desc`).catch(() => []),
+      xrmList('wc_partsrequest', `${prSelect}&$filter=_cr217_workorder_value eq ${woId}&$orderby=createdon desc`).catch(() => []),
+      xrmList('msdyn_workorderproduct',
+        `?$select=msdyn_name,_msdyn_product_value,msdyn_quantity,msdyn_linestatus,createdon&$filter=_msdyn_workorder_value eq ${woId}&$orderby=createdon desc`).catch(() => []),
+    ]);
+    const seen = new Set();
+    const requests = [];
+    for (const r of [...byReg, ...byWo]) { if (!seen.has(r.activityid)) { seen.add(r.activityid); requests.push(r); } }
+    const products = prods;
+    partsRequestRows = [
+      ...requests.map(p => ({
+        part: p['_wc_partname_value@OData.Community.Display.V1.FormattedValue'] || p.wc_partnumber || p.subject || '—',
+        qty: p.wc_quantity ?? '—',
+        shipTo: p['wc_shiptolocation@OData.Community.Display.V1.FormattedValue'] || '—',
+        status: p['cr217_partsrequeststatus@OData.Community.Display.V1.FormattedValue'] || 'Open',
+        when: p.createdon,
+      })),
+      ...products.map(p => ({
+        part: p['_msdyn_product_value@OData.Community.Display.V1.FormattedValue'] || p.msdyn_name || '—',
+        qty: p.msdyn_quantity ?? '—',
+        shipTo: '—',
+        status: 'Work Order Product',
+        when: p.createdon,
+      })),
+    ].sort((a, b) => new Date(b.when) - new Date(a.when));
     productsLoaded = true;
-    if (!rows.length) { $('products-body').innerHTML=`<tr><td colspan="4"><div class="empty-msg">No products</div></td></tr>`; return; }
-    $('products-body').innerHTML = rows.map(p => {
-      const name   = p['_msdyn_product_value@OData.Community.Display.V1.FormattedValue']||p.msdyn_name||'—';
-      const unit   = p['_msdyn_unit_value@OData.Community.Display.V1.FormattedValue']||'—';
-      const qty    = p.msdyn_quantity??'—';
-      const used   = p.msdyn_linestatus===690970001;
-      const cls    = used?'badge-inprogress':'badge-scheduled';
-      return `<tr>
-        <td>${esc(name)}</td><td class="col-muted">${esc(qty)}</td><td class="col-muted">${esc(unit)}</td>
-        <td><span class="status-badge ${cls}" style="font-size:10px;padding:2px 8px;">${used?'Used':'Estimated'}</span></td>
-      </tr>`;
-    }).join('');
-  } catch(e) { $('products-body').innerHTML=`<tr><td colspan="4"><div class="empty-msg">Error: ${esc(e.message)}</div></td></tr>`; }
+    renderPartsTable();
+  } catch(e) { $('products-body').innerHTML=`<tr><td colspan="5"><div class="empty-msg">Error: ${esc(e.message)}</div></td></tr>`; }
+}
+
+function renderPartsTable() {
+  const rows = partsRequestRows.map(p => `<tr>
+      <td>${esc(p.part)}</td><td class="col-muted">${esc(p.qty)}</td><td class="col-muted">${esc(p.shipTo)}</td>
+      <td><span class="status-badge badge-scheduled" style="font-size:10px;padding:2px 8px;">${esc(p.status)}</span></td><td></td>
+    </tr>`);
+  const draftRows = draftParts.map((d, i) => `<tr>
+    <td>${esc(d.displayName)}</td><td class="col-muted">${esc(d.quantity)}</td><td class="col-muted">${esc(SHIP_TO_LABELS[d.shipToLocation]||'—')}</td>
+    <td><span class="status-badge badge-cancelled" style="font-size:10px;padding:2px 8px;">Draft</span></td>
+    <td><button class="btn btn-ghost btn-sm" data-remove-draft="${i}" style="padding:2px 8px;font-size:11px;">Remove</button></td>
+  </tr>`);
+  const all = [...draftRows, ...rows];
+  $('products-body').innerHTML = all.length ? all.join('') : `<tr><td colspan="5"><div class="empty-msg">No parts requests</div></td></tr>`;
+  $('products-body').querySelectorAll('[data-remove-draft]').forEach(btn => {
+    btn.addEventListener('click', () => { draftParts.splice(+btn.dataset.removeDraft,1); renderPartsTable(); });
+  });
+  $('submit-parts-request-btn').disabled = !draftParts.length;
 }
 
 let selProduct=null, searchTimer=null;
 function initProdSearch() {
   if (prodSearchInited) return; prodSearchInited=true;
-  const sEl=$('product-search'), rEl=$('product-results'), selEl=$('product-selected'), addBtn=$('add-product-btn');
+
+  // Collapsible "new parts request" form
+  const formCard = $('parts-form-card'), toggleBtn = $('toggle-parts-form');
+  toggleBtn.addEventListener('click', () => {
+    const hidden = formCard.classList.toggle('hidden');
+    toggleBtn.textContent = hidden ? '+ New Parts Request' : '– Hide Form';
+    if (!hidden) $('product-search').focus();
+  });
+
+  const sEl=$('product-search'), rEl=$('product-results'), selEl=$('product-selected');
   sEl.addEventListener('input', () => {
-    clearTimeout(searchTimer); selProduct=null; addBtn.disabled=true; selEl.style.display='none';
+    clearTimeout(searchTimer); selProduct=null; selEl.style.display='none';
     const q=sEl.value.trim();
     if (q.length<2) { rEl.style.display='none'; rEl.innerHTML=''; return; }
     searchTimer = setTimeout(async () => {
       try {
-        const res = await xrmList('product', `?$select=productid,name&$filter=contains(name,'${q.replace(/'/g,"''")}') and statecode eq 0&$top=10&$orderby=name asc`);
+        const esc_q = q.replace(/'/g,"''");
+        const res = await xrmList('product', `?$select=productid,name,productnumber&$filter=(contains(name,'${esc_q}') or contains(productnumber,'${esc_q}')) and statecode eq 0&$top=10&$orderby=name asc`);
         if (!res.length) { rEl.innerHTML='<div class="prod-option col-muted">No results</div>'; rEl.style.display='block'; return; }
-        rEl.innerHTML = res.map(p=>`<div class="prod-option" data-id="${p.productid}" data-name="${esc(p.name)}">${esc(p.name)}</div>`).join('');
+        rEl.innerHTML = res.map(p=>`<div class="prod-option" data-id="${p.productid}" data-name="${esc(p.name)}" data-num="${esc(p.productnumber||'')}">${esc(p.name)}${p.productnumber?` <span class="col-muted">(${esc(p.productnumber)})</span>`:''}</div>`).join('');
         rEl.style.display='block';
         rEl.querySelectorAll('.prod-option').forEach(el => el.addEventListener('click', () => {
-          selProduct={id:el.dataset.id,name:el.dataset.name};
+          selProduct={id:el.dataset.id,name:el.dataset.name,number:el.dataset.num};
           sEl.value=el.dataset.name; rEl.style.display='none'; rEl.innerHTML='';
           selEl.textContent=`✓ ${el.dataset.name}`; selEl.style.display='block';
-          addBtn.disabled=false;
         }));
       } catch(_) { rEl.innerHTML='<div class="prod-option col-muted">Search failed</div>'; rEl.style.display='block'; }
     }, 350);
   });
-  addBtn.addEventListener('click', async () => {
-    if (!selProduct||!woId) return;
-    addBtn.disabled=true; addBtn.textContent='Adding…';
-    try {
-      await xrmCreate('msdyn_workorderproduct', {
-        'msdyn_workorder@odata.bind':`/msdyn_workorders(${woId})`,
-        'msdyn_product@odata.bind':`/products(${selProduct.id})`,
-        msdyn_quantity: parseFloat($('product-qty').value)||1,
-        msdyn_linestatus: 690970000,
-      });
-      sEl.value=''; selEl.style.display='none'; selProduct=null; addBtn.disabled=true;
-      productsLoaded=false; await loadProducts(); toast('Part added');
-    } catch(e) { toast('Failed: '+e.message, true); }
-    finally { addBtn.textContent='Add'; addBtn.disabled=!selProduct; }
+
+  $('add-product-btn').addEventListener('click', () => {
+    const partNumber = $('product-partnumber').value.trim();
+    const qty = parseFloat($('product-qty').value) || 1;
+    if (!selProduct && !partNumber) { toast('Select a product or enter a part number', true); return; }
+    draftParts.push({
+      product: selProduct ? { id: selProduct.id, name: selProduct.name } : null,
+      partNumber: partNumber || (selProduct && selProduct.number) || '',
+      partDescription: $('product-partdesc').value.trim() || null,
+      displayName: selProduct ? selProduct.name : partNumber,
+      quantity: qty,
+      shipToLocation: $('product-shiptolocation').value || null,
+      shipmentType: $('product-shipmenttype').value || null,
+      inventoryStock: $('product-fromstock').value || null,
+      installHours: $('product-installhours').value ? parseFloat($('product-installhours').value) : null,
+      po: $('product-po').value.trim() || null,
+      returnRequired: $('product-returnrequired').value === '1',
+      additionalNotes: $('product-additionalinfo').value.trim() || null,
+    });
+    sEl.value=''; selEl.style.display='none'; selProduct=null;
+    $('product-partnumber').value=''; $('product-partdesc').value=''; $('product-qty').value='1';
+    $('product-shiptolocation').value=''; $('product-shipmenttype').value=''; $('product-fromstock').value='';
+    $('product-installhours').value=''; $('product-po').value=''; $('product-returnrequired').value='0';
+    $('product-additionalinfo').value='';
+    renderPartsTable();
+    toast('Part added to list');
   });
+
+  $('submit-parts-request-btn').addEventListener('click', async () => {
+    if (!draftParts.length || !woId) return;
+    const btn = $('submit-parts-request-btn');
+    btn.disabled = true; btn.textContent = 'Submitting…';
+    try {
+      if (cr217WorkorderNav === null) {
+        try { cr217WorkorderNav = await getLookupNavProperty('wc_partsrequest','cr217_workorder'); } catch(_) { cr217WorkorderNav = ''; }
+      }
+      if (partNameNav === null) {
+        try { partNameNav = await getLookupNavProperty('wc_partsrequest','wc_partname'); } catch(_) { partNameNav = ''; }
+      }
+      for (const d of draftParts) {
+        const label = d.displayName || d.partNumber || 'Part';
+        const payload = {
+          subject: `Parts Request - ${label}${d.quantity?` (x${d.quantity})`:''}`,
+          'regardingobjectid_msdyn_workorder@odata.bind': `/msdyn_workorders(${woId})`,
+          wc_quantity: d.quantity,
+          cr217_partsrequeststatus: 439110000,
+          wc_partnumber: d.partNumber || null,
+          wc_partdescription: d.partDescription,
+          wc_shiptolocation: d.shipToLocation ? parseInt(d.shipToLocation,10) : null,
+          wc_shipmenttype: d.shipmentType ? parseInt(d.shipmentType,10) : null,
+          new_inventorystock: d.inventoryStock ? parseInt(d.inventoryStock,10) : null,
+          new_estimatedinstallhours: d.installHours,
+          wc_purchaseordernumber: d.po,
+          wc_returnrequired: d.returnRequired,
+          new_additionalnotes: d.additionalNotes,
+        };
+        if (cr217WorkorderNav) payload[`${cr217WorkorderNav}@odata.bind`] = `/msdyn_workorders(${woId})`;
+        if (partNameNav && d.product) payload[`${partNameNav}@odata.bind`] = `/products(${d.product.id})`;
+        await xrmCreate('wc_partsrequest', payload);
+      }
+      draftParts = [];
+      productsLoaded = false;
+      timelineLoaded = false;
+      await loadProducts();
+      toast('Parts request submitted');
+    } catch(e) {
+      toast('Failed: '+e.message, true);
+    } finally {
+      btn.textContent = 'Submit Parts Request';
+      btn.disabled = !draftParts.length;
+    }
+  });
+}
+
+// ── Timeline ───────────────────────────────────────────────────────────────────
+let timelineLoaded = false;
+function prettyActivityType(code) {
+  if (!code) return 'Activity';
+  const map = { wc_partsrequest:'Parts Request', task:'Task', email:'Email', phonecall:'Phone Call', appointment:'Appointment', fax:'Fax', letter:'Letter' };
+  return map[code] || String(code).replace(/_/g,' ').replace(/\b\w/g, ch => ch.toUpperCase());
+}
+function stripHtml(s) { return String(s||'').replace(/<[^>]*>/g,' ').replace(/&nbsp;/g,' ').replace(/&amp;/g,'&').replace(/\s+/g,' ').trim(); }
+async function loadTimeline() {
+  const el = $('timeline-list');
+  if (!woId) { el.innerHTML = `<div class="empty-msg">No work order linked</div>`; return; }
+  el.innerHTML = `<div class="inline-loading"><div class="spinner"></div></div>`;
+  try {
+    const [activities, notes] = await Promise.all([
+      xrmList('activitypointer', `?$select=activityid,subject,activitytypecode,createdon,description&$filter=_regardingobjectid_value eq ${woId}&$orderby=createdon desc&$top=100`).catch(()=>[]),
+      xrmList('annotation', `?$select=subject,notetext,createdon,_createdby_value&$filter=_objectid_value eq ${woId}&$orderby=createdon desc&$top=100`).catch(()=>[]),
+    ]);
+    const items = [];
+    activities.forEach(a => items.push({ when:a.createdon, type:prettyActivityType(a.activitytypecode), title:a.subject||prettyActivityType(a.activitytypecode), body:a.description||'' }));
+    notes.forEach(n => items.push({ when:n.createdon, type:'Note', title:n.subject||'Note', body:n.notetext||'', author:n['_createdby_value@OData.Community.Display.V1.FormattedValue']||'' }));
+    items.sort((a,b) => new Date(b.when) - new Date(a.when));
+    timelineLoaded = true;
+    if (!items.length) { el.innerHTML = `<div class="empty-msg">No timeline activity yet</div>`; return; }
+    el.innerHTML = items.map(it => `
+      <div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 12px;">
+        <div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline;">
+          <span style="font-size:12px;font-weight:600;">${esc(it.title)}</span>
+          <span style="font-size:11px;color:var(--muted2);white-space:nowrap;">${esc(fmtDate(it.when))}</span>
+        </div>
+        <div style="font-size:11px;color:var(--accent);margin-top:2px;">${esc(it.type)}${it.author?` · ${esc(it.author)}`:''}</div>
+        ${it.body?`<div style="font-size:12px;color:var(--muted2);margin-top:6px;white-space:pre-wrap;">${esc(stripHtml(it.body).slice(0,400))}</div>`:''}
+      </div>`).join('');
+  } catch(e) { el.innerHTML = `<div class="empty-msg">Error: ${esc(e.message)}</div>`; }
 }
 
 // ── Notes ─────────────────────────────────────────────────────────────────────
