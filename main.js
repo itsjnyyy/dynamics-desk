@@ -1,7 +1,38 @@
-const { app, BrowserWindow, ipcMain, nativeTheme } = require('electron');
+const { app, BrowserWindow, ipcMain, nativeTheme, Menu, MenuItem, webContents } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const updater = require('./updater');
+
+// Native spellcheck: Chromium underlines misspellings in every editable field.
+// This adds the right-click menu (suggestions + add-to-dictionary) so the
+// spellchecker is actually usable, and pins the language to English.
+function attachSpellcheck(w) {
+  try { w.webContents.session.setSpellCheckerLanguages(['en-US']); } catch (_) {}
+  w.webContents.on('context-menu', (_e, params) => {
+    if (!params.isEditable && !params.misspelledWord) return;
+    const menu = new Menu();
+    if (params.misspelledWord) {
+      for (const s of params.dictionarySuggestions) {
+        menu.append(new MenuItem({ label: s, click: () => w.webContents.replaceMisspelling(s) }));
+      }
+      if (params.dictionarySuggestions.length) menu.append(new MenuItem({ type: 'separator' }));
+      menu.append(new MenuItem({
+        label: 'Add to dictionary',
+        click: () => w.webContents.session.addWordToSpellCheckerDictionary(params.misspelledWord),
+      }));
+      menu.append(new MenuItem({ type: 'separator' }));
+    }
+    if (params.isEditable) {
+      menu.append(new MenuItem({ role: 'cut', enabled: params.editFlags.canCut }));
+      menu.append(new MenuItem({ role: 'copy', enabled: params.editFlags.canCopy }));
+      menu.append(new MenuItem({ role: 'paste', enabled: params.editFlags.canPaste }));
+      menu.append(new MenuItem({ role: 'selectAll' }));
+    } else if (params.selectionText) {
+      menu.append(new MenuItem({ role: 'copy' }));
+    }
+    if (menu.items.length) menu.popup();
+  });
+}
 
 // Report a dark color scheme to embedded web content (Outlook on the web honors
 // prefers-color-scheme, so this makes the Outlook tab render in dark mode).
@@ -49,11 +80,26 @@ app.whenReady().then(() => {
     }
   });
 
+  attachSpellcheck(win);
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   win.once('ready-to-show', () => win.show());
 });
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+
+// ── Shared Dynamics session ─────────────────────────────────────────────────
+// The main window loads the full Dynamics shell once to get a warm Xrm.WebApi
+// session. Child windows (work order, contact, team member) route their Web API
+// calls through that same session over IPC instead of each loading the heavy
+// shell themselves — so they open near-instantly.
+let apiWebContentsId = null;
+ipcMain.handle('register-api-webview', (_e, id) => { apiWebContentsId = id; return true; });
+ipcMain.handle('xrm-ready', () => apiWebContentsId != null && !!webContents.fromId(apiWebContentsId));
+ipcMain.handle('xrm-exec', async (_e, script) => {
+  const wc = apiWebContentsId != null ? webContents.fromId(apiWebContentsId) : null;
+  if (!wc || wc.isDestroyed()) throw new Error('Dynamics session not ready');
+  return await wc.executeJavaScript(script, true);
+});
 
 ipcMain.handle('get-settings', () => store.get('settings', null));
 ipcMain.handle('save-settings', (_, s) => { store.set('settings', s); return true; });
@@ -75,6 +121,7 @@ ipcMain.handle('open-record', (_, { url, title }) => {
     show: false,
     webPreferences: { partition: 'persist:dynamics', contextIsolation: true, nodeIntegration: false }
   });
+  attachSpellcheck(recWin);
   recWin.loadURL(url);
   recWin.once('ready-to-show', () => recWin.show());
   recWin.setMenuBarVisibility(false);
@@ -91,6 +138,7 @@ ipcMain.handle('open-workorder', (_, { workOrderId, orgUrl, title }) => {
       contextIsolation: true, nodeIntegration: false, webviewTag: true
     }
   });
+  attachSpellcheck(woWin);
   woWin.loadFile(path.join(__dirname, 'renderer', 'workorder.html'), {
     hash: `bid=${encodeURIComponent(workOrderId)}&org=${encodeURIComponent(orgUrl)}`
   });
@@ -109,6 +157,7 @@ ipcMain.handle('open-workorder-direct', (_, { workOrderId, orgUrl, title }) => {
       contextIsolation: true, nodeIntegration: false, webviewTag: true
     }
   });
+  attachSpellcheck(woWin);
   woWin.loadFile(path.join(__dirname, 'renderer', 'workorder.html'), {
     hash: `wo=${encodeURIComponent(workOrderId)}&org=${encodeURIComponent(orgUrl)}`
   });
@@ -127,6 +176,7 @@ ipcMain.handle('open-contact', (_, { contactId, orgUrl, title }) => {
       contextIsolation: true, nodeIntegration: false, webviewTag: true
     }
   });
+  attachSpellcheck(cWin);
   cWin.loadFile(path.join(__dirname, 'renderer', 'contact.html'), {
     hash: `cid=${encodeURIComponent(contactId)}&org=${encodeURIComponent(orgUrl)}`
   });
@@ -145,6 +195,7 @@ ipcMain.handle('open-team-member', (_, { name, orgUrl, title }) => {
       contextIsolation: true, nodeIntegration: false, webviewTag: true
     }
   });
+  attachSpellcheck(tWin);
   tWin.loadFile(path.join(__dirname, 'renderer', 'team-member.html'), {
     hash: `name=${encodeURIComponent(name)}&org=${encodeURIComponent(orgUrl)}`
   });

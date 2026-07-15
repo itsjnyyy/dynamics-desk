@@ -2,17 +2,17 @@ const params    = new URLSearchParams(window.location.hash.slice(1));
 const contactId = decodeURIComponent(params.get('cid') || '');
 const orgUrl    = decodeURIComponent(params.get('org') || '');
 
-const apiWv = document.getElementById('api-wv');
-apiWv.src   = `${orgUrl}/main.aspx`;
+// Route Web API calls through the main window's warm Dynamics session (see main.js).
+const apiWv = { executeJavaScript: (script) => window.api.xrmExec(script) };
 
 const $   = id => document.getElementById(id);
 const esc = s  => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 async function waitForXrm() {
-  for (let i = 0; i < 60; i++) {
-    await sleep(500);
-    try { if (await apiWv.executeJavaScript('typeof Xrm!=="undefined"&&!!Xrm.WebApi')) return; } catch(_) {}
+  for (let i = 0; i < 200; i++) {
+    try { if (await window.api.xrmReady()) return; } catch(_) {}
+    await sleep(150);
   }
   throw new Error('Could not connect to Dynamics — is your session active?');
 }

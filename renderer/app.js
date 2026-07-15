@@ -99,6 +99,18 @@ function statusBadge(statusName) {
   return `<span class="badge ${cls}">${esc(statusName || 'Unknown')}</span>`;
 }
 
+function substatusBadge(sub) {
+  if (!sub) return '<span class="muted">—</span>';
+  const s = sub.toLowerCase();
+  // Reuse the Status badge styles: green = complete, yellow/orange = follow up,
+  // blue = unscheduled, grey = sent to bc / everything else.
+  let cls = 'badge-cancelled'; // grey default
+  if (s.includes('complete'))       cls = 'badge-completed';  // green
+  else if (s.includes('follow'))    cls = 'badge-traveling';  // yellow/orange
+  else if (s.includes('unschedul')) cls = 'badge-scheduled';  // blue
+  return `<span class="badge ${cls}">${esc(sub)}</span>`;
+}
+
 function bookingBlockClass(statusName) {
   const s = (statusName || '').toLowerCase();
   if (s.includes('travel'))      return 'traveling';
@@ -208,11 +220,14 @@ function hideLoginOverlay() { $('login-overlay').classList.add('hidden'); }
 
 async function waitForXrm() {
   setStatus('Loading…');
-  for (let i = 0; i < 40; i++) {
+  // Poll frequently so we proceed the instant Xrm is available. ~30s timeout.
+  for (let i = 0; i < 200; i++) {
     try {
       const ready = await apiWv.executeJavaScript('typeof Xrm !== "undefined" && typeof Xrm.WebApi !== "undefined"');
       if (ready) {
         xrmReady = true;
+        // Share this warm session with child windows so they don't reload the shell.
+        try { await window.api.registerApiWebview(apiWv.getWebContentsId()); } catch(_) {}
         try {
           const uname = await apiWv.executeJavaScript('Xrm.Utility.getGlobalContext().getUserName()');
           if (uname) $('user-name').textContent = uname;
@@ -220,7 +235,7 @@ async function waitForXrm() {
         return;
       }
     } catch (_) {}
-    await sleep(500);
+    await sleep(150);
   }
   setStatus('Could not connect');
 }
@@ -312,9 +327,8 @@ window.__dumpWorkOrder = async function(number) {
 
 async function xrmCreate(entity, data) {
   if (!xrmReady) throw new Error('Xrm not ready');
-  await apiWv.executeJavaScript(`window.__xd=${JSON.stringify(data)}`);
   const r = JSON.parse(await apiWv.executeJavaScript(
-    `(async()=>{try{const r=await Xrm.WebApi.createRecord("${entity}",window.__xd);return JSON.stringify({id:r.id});}catch(e){return JSON.stringify({__err:e.message})}})()`
+    `(async()=>{try{const __d=${JSON.stringify(data)};const r=await Xrm.WebApi.createRecord("${entity}",__d);return JSON.stringify({id:r.id});}catch(e){return JSON.stringify({__err:e.message})}})()`
   ));
   if (r?.__err) throw new Error(r.__err);
   return r.id;
@@ -386,26 +400,7 @@ function loadTab(tab) {
   else if (tab === 'contacts') loadContacts();
   else if (tab === 'team') loadTeam();
   else if (tab === 'assets') showState('assets', 'empty');
-  else if (tab === 'outlook') loadOutlook();
 }
-
-// ── OUTLOOK ──────────────────────────────────────────────────────────────────
-const OUTLOOK_URL = 'https://outlook.office.com/mail/';
-let outlookLoaded = false;
-function loadOutlook() {
-  const wv = $('outlook-wv');
-  if (!outlookLoaded) {
-    outlookLoaded = true;
-    $('outlook-loading').classList.remove('hidden');
-    wv.addEventListener('did-stop-loading', () => $('outlook-loading').classList.add('hidden'));
-    wv.addEventListener('did-fail-load', e => { if (e.errorCode !== -3) $('outlook-loading').classList.add('hidden'); });
-    // Open external links / popups in the user's real browser instead of a blank webview
-    wv.addEventListener('new-window', e => { if (e.url) window.api.openExternal(e.url); });
-    wv.src = OUTLOOK_URL;
-  }
-}
-$('outlook-refresh').addEventListener('click', () => { const wv = $('outlook-wv'); if (outlookLoaded) wv.reload(); else loadOutlook(); });
-$('outlook-external').addEventListener('click', () => window.api.openExternal(OUTLOOK_URL));
 
 // ── BOOKINGS ───────────────────────────────────────────────────────────────
 let bookingsFilter = 'upcoming';
@@ -586,6 +581,7 @@ function renderBookings(records, customerMap = {}) {
     const resource = r['_resource_value@OData.Community.Display.V1.FormattedValue'] || '—';
     const status   = r.BookingStatus?.name || r['_bookingstatus_value@OData.Community.Display.V1.FormattedValue'] || '';
     const customer = customerMap[r._msdyn_workorder_value] || '—';
+    const substatus = (cache.bookingsSubstatusMap || {})[r._msdyn_workorder_value] || '';
     return `<tr class="clickable-row" data-idx="${i}">
       <td>${fmtDateTime(r.starttime)}</td>
       <td class="muted">${fmtDateTime(r.endtime)}</td>
@@ -593,6 +589,7 @@ function renderBookings(records, customerMap = {}) {
       <td>${esc(r.name || '—')}</td>
       <td class="muted">${esc(resource)}</td>
       <td>${statusBadge(status)}</td>
+      <td>${substatusBadge(substatus)}</td>
     </tr>`;
   }).join('');
 
@@ -1519,7 +1516,7 @@ async function createTravelWorkOrder() {
     await bind('msdyn_priority',           TRAVEL_WO.priority);
     await bind('msdyn_pricelist',          TRAVEL_WO.pricelist);
     await bind('msdyn_serviceterritory',   TRAVEL_WO.serviceterritory);
-    // Reported By Contact = the signed-in user's contact record (the signed-in user)
+    // Reported By Contact = the signed-in user's contact record (e.g. "Your Name")
     try {
       const uname = String(await apiWv.executeJavaScript('Xrm.Utility.getGlobalContext().getUserName()') || '').trim();
       if (uname && nav.msdyn_reportedbycontact) {

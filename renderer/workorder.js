@@ -3,8 +3,10 @@ const bookingId = decodeURIComponent(params.get('bid') || '');
 const directWoId = decodeURIComponent(params.get('wo') || '');
 const orgUrl    = decodeURIComponent(params.get('org') || '');
 
-const apiWv = document.getElementById('api-wv');
-apiWv.src   = `${orgUrl}/main.aspx`;
+// Route Web API calls through the main window's already-warm Dynamics session
+// (see main.js) instead of loading the heavy shell in our own webview. The shim
+// keeps every existing apiWv.executeJavaScript(...) call site unchanged.
+const apiWv = { executeJavaScript: (script) => window.api.xrmExec(script) };
 
 const $   = id => document.getElementById(id);
 const esc = s  => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -36,9 +38,11 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // ── Xrm bridge ────────────────────────────────────────────────────────────────
 async function waitForXrm() {
-  for (let i = 0; i < 60; i++) {
-    await sleep(500);
-    try { if (await apiWv.executeJavaScript('typeof Xrm!=="undefined"&&!!Xrm.WebApi')) return; } catch(_) {}
+  // The main window's session is normally already warm, so this returns almost
+  // immediately. ~30s timeout in case the main window is still connecting.
+  for (let i = 0; i < 200; i++) {
+    try { if (await window.api.xrmReady()) return; } catch(_) {}
+    await sleep(150);
   }
   throw new Error('Could not connect to Dynamics — is your session active?');
 }
@@ -149,16 +153,14 @@ async function getLookupNavProperty(entityLogicalName, lookupLogicalName) {
   return name;
 }
 async function xrmUpdate(entity, id, data) {
-  await apiWv.executeJavaScript(`window.__xd=${JSON.stringify(data)}`);
   const r = JSON.parse(await apiWv.executeJavaScript(
-    `(async()=>{try{await Xrm.WebApi.updateRecord("${entity}","${id}",window.__xd);return JSON.stringify({ok:1});}catch(e){return JSON.stringify({__err:e.message})}})()`
+    `(async()=>{try{const __d=${JSON.stringify(data)};await Xrm.WebApi.updateRecord("${entity}","${id}",__d);return JSON.stringify({ok:1});}catch(e){return JSON.stringify({__err:e.message})}})()`
   ));
   if (r?.__err) throw new Error(r.__err);
 }
 async function xrmCreate(entity, data) {
-  await apiWv.executeJavaScript(`window.__xd=${JSON.stringify(data)}`);
   const r = JSON.parse(await apiWv.executeJavaScript(
-    `(async()=>{try{const r=await Xrm.WebApi.createRecord("${entity}",window.__xd);return JSON.stringify({id:r.id});}catch(e){return JSON.stringify({__err:e.message})}})()`
+    `(async()=>{try{const __d=${JSON.stringify(data)};const r=await Xrm.WebApi.createRecord("${entity}",__d);return JSON.stringify({id:r.id});}catch(e){return JSON.stringify({__err:e.message})}})()`
   ));
   if (r?.__err) throw new Error(r.__err);
   return r.id;
@@ -186,6 +188,11 @@ async function loadData() {
   }
 
   if (woId) {
+    // The sub-status reference list doesn't depend on the work order, so start
+    // it immediately and await it later (runs concurrently with everything else).
+    const subStatusesP = xrmList('msdyn_workordersubstatus',
+      '?$select=msdyn_workordersubstatusid,msdyn_name&$orderby=msdyn_name asc').catch(() => []);
+
     wo = await xrmGet('msdyn_workorder', woId,
       '?$select=msdyn_name,msdyn_systemstatus,msdyn_workordersummary,msdyn_instructions,' +
       'msdyn_address1,msdyn_address2,msdyn_city,msdyn_stateorprovince,msdyn_postalcode,msdyn_country,' +
@@ -193,38 +200,31 @@ async function loadData() {
       '_msdyn_serviceterritory_value,_msdyn_substatus_value,_msdyn_priority_value,_msdyn_customerasset_value,' +
       'msdyn_datewindowstart,msdyn_datewindowend,msdyn_timetopromised,msdyn_timefrompromised,' +
       'wc_workorderproblemdescription,_msdyn_reportedbycontact_value');
+
+    // Everything below only needs woId / values already on `wo`, so fire them all
+    // off at once instead of one round-trip at a time.
     const contactId = wo._msdyn_reportedbycontact_value;
-    contact = null;
-    if (contactId) {
-      try {
-        contact = await xrmGet('contact', contactId,
-          '?$select=fullname,telephone1,mobilephone,emailaddress1,jobtitle');
-      } catch(_) {}
-    }
-
     const assetId = wo._msdyn_customerasset_value;
-    customerAsset = null;
-    if (assetId) {
-      try {
-        customerAsset = await xrmGet('msdyn_customerasset', assetId,
-          '?$select=msdyn_name,wc_assettag,msdyn_assettag,wc_seriallotnumber');
-        customerAsset.__tag    = customerAsset.wc_assettag || customerAsset.msdyn_assettag;
-        customerAsset.__serial = customerAsset.wc_seriallotnumber;
-      } catch(_) {}
+    const [contactR, assetR, incidents, subStatusesR] = await Promise.all([
+      contactId
+        ? xrmGet('contact', contactId, '?$select=fullname,telephone1,mobilephone,emailaddress1,jobtitle').catch(() => null)
+        : Promise.resolve(null),
+      assetId
+        ? xrmGet('msdyn_customerasset', assetId, '?$select=msdyn_name,wc_assettag,msdyn_assettag,wc_seriallotnumber').catch(() => null)
+        : Promise.resolve(null),
+      xrmList('msdyn_workorderincident', `?$filter=_msdyn_workorder_value eq ${woId}&$top=1`).catch(() => []),
+      subStatusesP,
+      loadEngineers().catch(() => {}),
+    ]);
+
+    contact = contactR;
+    customerAsset = assetR;
+    if (customerAsset) {
+      customerAsset.__tag    = customerAsset.wc_assettag || customerAsset.msdyn_assettag;
+      customerAsset.__serial = customerAsset.wc_seriallotnumber;
     }
-
-    const incidents = await xrmList('msdyn_workorderincident',
-      `?$filter=_msdyn_workorder_value eq ${woId}&$top=1`);
     incident = incidents[0] || null;
-
-    try {
-      subStatuses = await xrmList('msdyn_workordersubstatus',
-        '?$select=msdyn_workordersubstatusid,msdyn_name&$orderby=msdyn_name asc');
-    } catch(_) { subStatuses = []; }
-
-    try {
-      await loadEngineers();
-    } catch(_) {}
+    subStatuses = subStatusesR || [];
   }
 }
 
@@ -737,36 +737,53 @@ function initProdSearch() {
       if (partNameNav === null) {
         try { partNameNav = await getLookupNavProperty('wc_partsrequest','wc_partname'); } catch(_) { partNameNav = ''; }
       }
-      for (const d of draftParts) {
-        const label = d.displayName || d.partNumber || 'Part';
-        const payload = {
-          subject: `Parts Request - ${label}${d.quantity?` (x${d.quantity})`:''}`,
-          'regardingobjectid_msdyn_workorder@odata.bind': `/msdyn_workorders(${woId})`,
-          wc_quantity: d.quantity,
-          cr217_partsrequeststatus: 439110000,
-          wc_partnumber: d.partNumber || null,
-          wc_partdescription: d.partDescription,
-          wc_shiptolocation: d.shipToLocation ? parseInt(d.shipToLocation,10) : null,
-          wc_shipmenttype: d.shipmentType ? parseInt(d.shipmentType,10) : null,
-          new_inventorystock: d.inventoryStock ? parseInt(d.inventoryStock,10) : null,
-          new_estimatedinstallhours: d.installHours,
-          wc_purchaseordernumber: d.po,
-          wc_returnrequired: d.returnRequired,
-          new_additionalnotes: d.additionalNotes,
-        };
-        if (cr217WorkorderNav) payload[`${cr217WorkorderNav}@odata.bind`] = `/msdyn_workorders(${woId})`;
-        if (partNameNav && d.product) payload[`${partNameNav}@odata.bind`] = `/products(${d.product.id})`;
-        await xrmCreate('wc_partsrequest', payload);
-      }
+      // Combine every drafted part into a SINGLE parts order (one wc_partsrequest
+      // record). The header fields use the first part; the full itemized list of
+      // parts/quantities/ship-to is written into the notes so the whole order
+      // lives on one timeline entry.
+      const head = draftParts[0];
+      const totalQty = draftParts.reduce((s, d) => s + (parseFloat(d.quantity) || 0), 0);
+      const lineList = draftParts.map(d => {
+        const nm = d.displayName || d.partNumber || 'Part';
+        const bits = [`• ${nm}`];
+        if (d.partNumber) bits.push(`PN ${d.partNumber}`);
+        bits.push(`x${d.quantity || 1}`);
+        if (d.shipToLocation && SHIP_TO_LABELS[d.shipToLocation]) bits.push(`→ ${SHIP_TO_LABELS[d.shipToLocation]}`);
+        if (d.additionalNotes) bits.push(`(${d.additionalNotes})`);
+        return bits.join('  ');
+      }).join('\n');
+      const subject = draftParts.length === 1
+        ? `Parts Request - ${head.displayName || head.partNumber || 'Part'}${head.quantity?` (x${head.quantity})`:''}`
+        : `Parts Request - ${draftParts.length} items`;
+      const combinedNotes = [head.additionalNotes ? null : null, `Parts ordered:\n${lineList}`]
+        .filter(Boolean).join('\n\n');
+      const payload = {
+        subject,
+        'regardingobjectid_msdyn_workorder@odata.bind': `/msdyn_workorders(${woId})`,
+        wc_quantity: draftParts.length === 1 ? head.quantity : totalQty,
+        cr217_partsrequeststatus: 439110000,
+        wc_partnumber: head.partNumber || null,
+        wc_partdescription: head.partDescription,
+        wc_shiptolocation: head.shipToLocation ? parseInt(head.shipToLocation,10) : null,
+        wc_shipmenttype: head.shipmentType ? parseInt(head.shipmentType,10) : null,
+        new_inventorystock: head.inventoryStock ? parseInt(head.inventoryStock,10) : null,
+        new_estimatedinstallhours: head.installHours,
+        wc_purchaseordernumber: head.po,
+        wc_returnrequired: draftParts.some(d => d.returnRequired),
+        new_additionalnotes: combinedNotes,
+      };
+      if (cr217WorkorderNav) payload[`${cr217WorkorderNav}@odata.bind`] = `/msdyn_workorders(${woId})`;
+      if (partNameNav && head.product) payload[`${partNameNav}@odata.bind`] = `/products(${head.product.id})`;
+      await xrmCreate('wc_partsrequest', payload);
       draftParts = [];
       productsLoaded = false;
       timelineLoaded = false;
       await loadProducts();
-      toast('Parts request submitted');
+      toast('Parts order submitted');
     } catch(e) {
       toast('Failed: '+e.message, true);
     } finally {
-      btn.textContent = 'Submit Parts Request';
+      btn.textContent = 'Submit Parts Order';
       btn.disabled = !draftParts.length;
     }
   });

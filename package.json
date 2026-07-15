@@ -1,6 +1,6 @@
 {
   "name": "dynamics-desk",
-  "version": "1.1.22",
+  "version": "1.1.23",
   "description": "Clean Dynamics 365 CRM desktop client",
   "main": "main.js",
   "scripts": {

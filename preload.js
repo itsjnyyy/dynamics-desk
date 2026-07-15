@@ -15,4 +15,6 @@ contextBridge.exposeInMainWorld('api', {
   checkForUpdate: () => ipcRenderer.invoke('updater-check'),
   applyUpdate:    (asset) => ipcRenderer.invoke('updater-apply', asset),
   onUpdateProgress: (cb) => ipcRenderer.on('updater-progress', (_, p) => cb(p)),
+  // Register the main window's Dynamics webview as the shared session for child windows.
+  registerApiWebview: (id) => ipcRenderer.invoke('register-api-webview', id),
 });

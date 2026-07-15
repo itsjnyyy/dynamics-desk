@@ -33,6 +33,7 @@ On first launch, enter your Dynamics 365 org URL and sign in with your Microsoft
 - One-click "Travel Home" internal work order (creates the work order and books it)
 - Standalone contact and team-member detail windows with live status (Free / Scheduled / Traveling / In Progress)
 - Accounts and contacts directories with server-side search and a clickable account detail modal
-- Embedded Outlook tab (single sign-on via the same Microsoft session)
+- Native spellcheck across all text fields (right-click suggestions + custom dictionary)
+- Fast child windows: work order / contact / team windows share the main window's warm Dynamics session over IPC instead of each loading the full app shell
 - Configurable team roster (add/remove members in-app)
 - Custom light-blue/grey theme with Windows-style window controls
