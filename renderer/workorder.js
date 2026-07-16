@@ -165,6 +165,12 @@ async function xrmCreate(entity, data) {
   if (r?.__err) throw new Error(r.__err);
   return r.id;
 }
+async function xrmDelete(entity, id) {
+  const r = JSON.parse(await apiWv.executeJavaScript(
+    `(async()=>{try{await Xrm.WebApi.deleteRecord("${entity}","${id}");return JSON.stringify({ok:1});}catch(e){return JSON.stringify({__err:e.message})}})()`
+  ));
+  if (r?.__err) throw new Error(r.__err);
+}
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let booking = null, wo = null, woId = null, incident = null, contact = null, customerAsset = null, bookingStatuses = [], resources = [], subStatuses = [], dirty = {}, substatusNavProp = null;
@@ -481,6 +487,7 @@ async function loadEngineers() {
         <span class="eng-open" style="font-size:13px;cursor:pointer;flex:1;">${esc(name)}</span>
         <span style="font-size:11px;color:var(--muted2);">${esc(time)}</span>
         <button class="btn btn-ghost btn-sm eng-transfer" title="Transfer to another engineer" style="padding:2px 8px;font-size:11px;">Transfer</button>
+        <button class="btn btn-ghost btn-sm eng-remove" title="Remove engineer (deletes this booking)" data-name="${esc(name)}" style="padding:2px 8px;font-size:11px;color:var(--danger);">Remove</button>
       </div>`;
   }).join('') : `<div class="field-value dim">No engineers assigned</div>`;
 
@@ -517,6 +524,25 @@ async function loadEngineers() {
           await loadEngineers();
         } catch (e) { toast('Transfer failed: ' + e.message, true); loadEngineers(); }
       });
+    });
+  });
+
+  // Remove engineer = delete their booking off this work order
+  el.querySelectorAll('.eng-remove').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const row = btn.closest('.engineer-row');
+      const bid = row.dataset.bid, name = btn.dataset.name || 'this engineer';
+      if (!bid) return;
+      if (!confirm(`Remove ${name} from this work order? This deletes their booking.`)) return;
+      btn.disabled = true; btn.textContent = 'Removing…';
+      try {
+        await xrmDelete('bookableresourcebooking', bid);
+        toast('Engineer removed');
+        await loadEngineers();
+      } catch (e) {
+        toast('Remove failed: ' + e.message, true);
+        btn.disabled = false; btn.textContent = 'Remove';
+      }
     });
   });
 

@@ -108,7 +108,7 @@ html, body {
 .wc-btn:hover { background: rgba(255,255,255,.08); color: var(--text); }
 .wc-close:hover { background: #e81123; color: #fff; }
 
-#titlebar-status { font-size: 11px; color: var(--muted); }
+#titlebar-status { font-size: 11px; color: var(--muted); margin-left: 8px; }
 
 /* ── Body ────────────────────────────────────────────────────────────────── */
 #body { flex: 1; display: flex; overflow: hidden; }

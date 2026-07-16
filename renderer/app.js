@@ -253,6 +253,14 @@ function reconnect() {
 }
 $('reconnect-btn').addEventListener('click', reconnect);
 
+// Force full refresh: reload the whole window so the hidden Dynamics webview is
+// rebuilt and a brand-new Xrm session is established. Use this when the session
+// has timed out and the normal per-tab refresh buttons no longer work.
+$('force-refresh-btn').addEventListener('click', () => {
+  setStatus('Reloading…');
+  location.reload();
+});
+
 // ── Xrm.WebApi fetch ──────────────────────────────────────────────────────
 async function xrmFetchPage(entity, query) {
   if (!xrmReady) throw new Error('Xrm not ready');
