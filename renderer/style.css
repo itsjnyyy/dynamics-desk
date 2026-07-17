@@ -1,5 +1,17 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+/* Themed scrollbars so they blend into the grey UI instead of the OS default */
+::-webkit-scrollbar { width: 11px; height: 11px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: #6b7078;
+  border-radius: 8px;
+  border: 3px solid transparent;   /* transparent inset so the thumb reads as a slim pill */
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background: #838994; background-clip: content-box; }
+::-webkit-scrollbar-corner { background: transparent; }
+
 :root {
   --bg:       #3c3f46;
   --bg2:      #45484f;
@@ -429,7 +441,8 @@ tr.date-group-row:hover { background: transparent !important; }
 .sched-row {
   display: flex;
   align-items: stretch;
-  border-bottom: 1px solid var(--border);
+  /* Soft grey-white divider so it's easy to tell where one person's lane ends and the next begins */
+  border-bottom: 2px solid #82868e;
 }
 
 .sched-resource-label {
