@@ -116,6 +116,10 @@
     #toast.show { opacity: 1; transform: none; }
     #toast.err  { border-color: var(--danger); color: var(--danger); }
     ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: transparent; } ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    .tl-body { font-size:12px; color:var(--muted2); margin-top:6px; white-space:pre-wrap; word-break:break-word; line-height:1.5; }
+    .tl-body.clamp { max-height:5.6em; overflow:hidden; -webkit-mask-image:linear-gradient(180deg,#000 62%,transparent); mask-image:linear-gradient(180deg,#000 62%,transparent); }
+    .tl-toggle { margin-top:4px; background:none; border:none; color:var(--accent); font-size:11px; cursor:pointer; padding:2px 0; }
+    .tl-toggle:hover { text-decoration:underline; }
     .hidden { display: none !important; }
     #product-results { position: relative; z-index: 50; }
     .prod-option { padding: 8px 12px; cursor: pointer; font-size: 13px; border-bottom: 1px solid var(--border); }
@@ -385,7 +389,7 @@
           </table>
         </div>
         <div class="card hidden" id="parts-form-card">
-          <div class="card-title">Add Parts Request</div>
+          <div class="card-title">Add Part</div>
           <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;">
             <div style="grid-column:1/3;display:flex;flex-direction:column;gap:5px;position:relative;">
               <span class="field-label">Search Product</span>
@@ -398,63 +402,51 @@
               <input id="product-qty" class="field-input" type="number" value="1" min="0.01" step="any"/>
             </div>
             <div style="grid-column:1/4;display:flex;flex-direction:column;gap:5px;">
-              <span class="field-label">Part # (if not in catalog)</span>
+              <span class="field-label">New Part / Part # (if not in catalog)</span>
               <input id="product-partnumber" class="field-input" type="text" placeholder="Part number…"/>
             </div>
-            <div style="grid-column:1/4;display:flex;flex-direction:column;gap:5px;">
-              <span class="field-label">Part Description</span>
-              <input id="product-partdesc" class="field-input" type="text"/>
+            <div style="display:flex;flex-direction:column;gap:5px;">
+              <span class="field-label">Vendor</span>
+              <input id="product-vendor" class="field-input" type="text"/>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:5px;">
+              <span class="field-label">Shipping</span>
+              <select id="product-shipping" class="field-input"><option value="">—</option></select>
             </div>
             <div style="display:flex;flex-direction:column;gap:5px;">
               <span class="field-label">Ship to Location</span>
-              <select id="product-shiptolocation" class="field-input">
-                <option value="">—</option>
-                <option value="100000007">Location 1</option>
-                <option value="948000000">Location 2</option>
-                <option value="948000001">Warehouse 1</option>
-                <option value="948000002">Customer Site</option>
-                <option value="100000008">Warehouse 2</option>
-                <option value="948000004">Engineer Home</option>
-                <option value="948000005">Location 3</option>
-                <option value="948000006">Location 4</option>
-                <option value="948000003">Location 5</option>
-                <option value="100000009">Location 6</option>
-              </select>
+              <select id="product-shiptolocation" class="field-input"><option value="">—</option></select>
             </div>
             <div style="display:flex;flex-direction:column;gap:5px;">
-              <span class="field-label">Shipment Type</span>
-              <select id="product-shipmenttype" class="field-input">
-                <option value="">—</option>
-                <option value="948000000">Ground</option>
-                <option value="948000001">Overnight</option>
-                <option value="948000002">Overnight Saturday Delivery</option>
-              </select>
+              <span class="field-label">Ship to Name</span>
+              <input id="product-shiptoname" class="field-input" type="text"/>
             </div>
             <div style="display:flex;flex-direction:column;gap:5px;">
-              <span class="field-label">Inventory / Stock?</span>
-              <select id="product-fromstock" class="field-input">
-                <option value="">—</option>
-                <option value="100000001">Yes</option>
-                <option value="100000000">No</option>
-              </select>
+              <span class="field-label">Est. Install (minutes)</span>
+              <input id="product-installmins" class="field-input" type="number" min="0" step="any"/>
             </div>
             <div style="display:flex;flex-direction:column;gap:5px;">
-              <span class="field-label">Est. Install Hours</span>
-              <input id="product-installhours" class="field-input" type="number" min="0" step="any"/>
+              <span class="field-label">Current System Status</span>
+              <select id="product-systemstatus" class="field-input"><option value="">—</option></select>
             </div>
             <div style="display:flex;flex-direction:column;gap:5px;">
-              <span class="field-label">PO #</span>
-              <input id="product-po" class="field-input" type="text"/>
+              <span class="field-label">From Stock</span>
+              <select id="product-fromstock" class="field-input"><option value="">—</option><option value="true">Yes</option><option value="false">No</option></select>
             </div>
             <div style="display:flex;flex-direction:column;gap:5px;">
-              <span class="field-label">Return Required</span>
-              <select id="product-returnrequired" class="field-input">
-                <option value="0">No</option>
-                <option value="1">Yes</option>
-              </select>
+              <span class="field-label">Part Used</span>
+              <select id="product-partused" class="field-input"><option value="">—</option><option value="true">Yes</option><option value="false">No</option></select>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:5px;">
+              <span class="field-label">Warranty / Contract</span>
+              <select id="product-warranty" class="field-input"><option value="">—</option><option value="true">Yes</option><option value="false">No</option></select>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:5px;">
+              <span class="field-label">RMA</span>
+              <input id="product-rma" class="field-input" type="text"/>
             </div>
             <div style="grid-column:1/4;display:flex;flex-direction:column;gap:5px;">
-              <span class="field-label">Additional Notes</span>
+              <span class="field-label">Additional Information</span>
               <textarea id="product-additionalinfo" class="field-input" rows="2"></textarea>
             </div>
           </div>

@@ -625,16 +625,42 @@ async function loadTasks() {
   } catch(e) { $('tasks-body').innerHTML=`<tr><td colspan="5"><div class="empty-msg">Error: ${esc(e.message)}</div></td></tr>`; }
 }
 
-// ── Parts Request ──────────────────────────────────────────────────────────────
+// ── Parts Request (Work Order Products) ──────────────────────────────────────
+// Parts are ordered exactly like the Dynamics UI: each part is a msdyn_workorderproduct
+// record on the work order, then flagged submitted (the "Submit Parts" ribbon action).
 let partsRequestRows = [];
 let draftParts = [];
-let cr217WorkorderNav = null, partNameNav = null;
+let partsOptionsLoaded = false;
+const partsOptions = { shipping: [], shiptolocation: [], systemstatus: [] };
+const partsOptionLabel = { shipping: {}, shiptolocation: {}, systemstatus: {} };
 
-const SHIP_TO_LABELS = {
-  '100000007':'Location 1','948000000':'Location 2','948000001':'Warehouse 1',
-  '948000002':'Customer Site','100000008':'Warehouse 2','948000004':'Engineer Home',
-  '948000005':'Location 3','948000006':'Location 4','948000003':'Location 5','100000009':'Location 6'
-};
+async function fetchWopOptionSet(attr) {
+  const url = `${orgUrl}/api/data/v9.2/EntityDefinitions(LogicalName='msdyn_workorderproduct')/Attributes(LogicalName='${attr}')/Microsoft.Dynamics.CRM.PicklistAttributeMetadata?$select=LogicalName&$expand=OptionSet`;
+  const json = await apiWv.executeJavaScript(`fetch(${JSON.stringify(url)},{headers:{Accept:'application/json'}}).then(r=>r.json()).then(d=>JSON.stringify(d)).catch(e=>JSON.stringify({__err:e.message}))`);
+  const r = JSON.parse(json);
+  return (r.OptionSet?.Options || []).map(o => ({ value: o.Value, label: o.Label?.UserLocalizedLabel?.Label || String(o.Value) }));
+}
+function fillOptionSelect(id, opts) {
+  const sel = $(id); if (!sel) return;
+  sel.innerHTML = '<option value="">—</option>' + opts.map(o => `<option value="${o.value}">${esc(o.label)}</option>`).join('');
+}
+// Populate the Shipping / Ship-to / System-status dropdowns from Dynamics metadata
+// so the option values are always correct for this org.
+async function loadPartsOptions() {
+  if (partsOptionsLoaded) return;
+  partsOptionsLoaded = true;
+  const map = { shipping:'cr217_shipping', shiptolocation:'cr217_shiptolocation', systemstatus:'cr217_currentsystemstatus' };
+  await Promise.all(Object.entries(map).map(async ([key, attr]) => {
+    try {
+      const opts = await fetchWopOptionSet(attr);
+      partsOptions[key] = opts;
+      opts.forEach(o => { partsOptionLabel[key][o.value] = o.label; });
+    } catch(_) {}
+  }));
+  fillOptionSelect('product-shipping', partsOptions.shipping);
+  fillOptionSelect('product-shiptolocation', partsOptions.shiptolocation);
+  fillOptionSelect('product-systemstatus', partsOptions.systemstatus);
+}
 
 async function loadProducts() {
   if (!woId) { $('products-body').innerHTML=`<tr><td colspan="5"><div class="empty-msg">No work order linked</div></td></tr>`; return; }
@@ -647,7 +673,7 @@ async function loadProducts() {
       xrmList('wc_partsrequest', `${prSelect}&$filter=_regardingobjectid_value eq ${woId}&$orderby=createdon desc`).catch(() => []),
       xrmList('wc_partsrequest', `${prSelect}&$filter=_cr217_workorder_value eq ${woId}&$orderby=createdon desc`).catch(() => []),
       xrmList('msdyn_workorderproduct',
-        `?$select=msdyn_name,_msdyn_product_value,msdyn_quantity,msdyn_linestatus,createdon&$filter=_msdyn_workorder_value eq ${woId}&$orderby=createdon desc`).catch(() => []),
+        `?$select=msdyn_name,_msdyn_product_value,msdyn_quantity,msdyn_linestatus,cr217_newpartnumbernotinsystem,cr217_vendor,cr217_shiptolocation,pmich_new_partrequestsubmitted,createdon&$filter=_msdyn_workorder_value eq ${woId}&$orderby=createdon desc`).catch(() => []),
     ]);
     const seen = new Set();
     const requests = [];
@@ -662,10 +688,10 @@ async function loadProducts() {
         when: p.createdon,
       })),
       ...products.map(p => ({
-        part: p['_msdyn_product_value@OData.Community.Display.V1.FormattedValue'] || p.msdyn_name || '—',
+        part: p.cr217_newpartnumbernotinsystem || p['_msdyn_product_value@OData.Community.Display.V1.FormattedValue'] || p.msdyn_name || '—',
         qty: p.msdyn_quantity ?? '—',
-        shipTo: '—',
-        status: 'Work Order Product',
+        shipTo: p['cr217_shiptolocation@OData.Community.Display.V1.FormattedValue'] || '—',
+        status: p.pmich_new_partrequestsubmitted ? 'Submitted' : (p['msdyn_linestatus@OData.Community.Display.V1.FormattedValue'] || 'Open'),
         when: p.createdon,
       })),
     ].sort((a, b) => new Date(b.when) - new Date(a.when));
@@ -680,7 +706,7 @@ function renderPartsTable() {
       <td><span class="status-badge badge-scheduled" style="font-size:10px;padding:2px 8px;">${esc(p.status)}</span></td><td></td>
     </tr>`);
   const draftRows = draftParts.map((d, i) => `<tr>
-    <td>${esc(d.displayName)}</td><td class="col-muted">${esc(d.quantity)}</td><td class="col-muted">${esc(SHIP_TO_LABELS[d.shipToLocation]||'—')}</td>
+    <td>${esc(d.displayName)}</td><td class="col-muted">${esc(d.quantity)}</td><td class="col-muted">${esc(partsOptionLabel.shiptolocation[d.shipToLocation]||'—')}</td>
     <td><span class="status-badge badge-cancelled" style="font-size:10px;padding:2px 8px;">Draft</span></td>
     <td><button class="btn btn-ghost btn-sm" data-remove-draft="${i}" style="padding:2px 8px;font-size:11px;">Remove</button></td>
   </tr>`);
@@ -701,8 +727,9 @@ function initProdSearch() {
   toggleBtn.addEventListener('click', () => {
     const hidden = formCard.classList.toggle('hidden');
     toggleBtn.textContent = hidden ? '+ New Parts Request' : '– Hide Form';
-    if (!hidden) $('product-search').focus();
+    if (!hidden) { loadPartsOptions(); $('product-search').focus(); }
   });
+  loadPartsOptions();
 
   const sEl=$('product-search'), rEl=$('product-results'), selEl=$('product-selected');
   sEl.addEventListener('input', () => {
@@ -729,24 +756,30 @@ function initProdSearch() {
     const partNumber = $('product-partnumber').value.trim();
     const qty = parseFloat($('product-qty').value) || 1;
     if (!selProduct && !partNumber) { toast('Select a product or enter a part number', true); return; }
+    const boolOf = v => v === '' ? null : (v === 'true');
+    const intOf  = v => v ? parseInt(v, 10) : null;
     draftParts.push({
       product: selProduct ? { id: selProduct.id, name: selProduct.name } : null,
       partNumber: partNumber || (selProduct && selProduct.number) || '',
-      partDescription: $('product-partdesc').value.trim() || null,
       displayName: selProduct ? selProduct.name : partNumber,
       quantity: qty,
-      shipToLocation: $('product-shiptolocation').value || null,
-      shipmentType: $('product-shipmenttype').value || null,
-      inventoryStock: $('product-fromstock').value || null,
-      installHours: $('product-installhours').value ? parseFloat($('product-installhours').value) : null,
-      po: $('product-po').value.trim() || null,
-      returnRequired: $('product-returnrequired').value === '1',
-      additionalNotes: $('product-additionalinfo').value.trim() || null,
+      vendor: $('product-vendor').value.trim() || null,
+      shipping: intOf($('product-shipping').value),
+      shipToLocation: intOf($('product-shiptolocation').value),
+      shipToName: $('product-shiptoname').value.trim() || null,
+      installMinutes: intOf($('product-installmins').value),
+      systemStatus: intOf($('product-systemstatus').value),
+      fromStock: boolOf($('product-fromstock').value),
+      partUsed: boolOf($('product-partused').value),
+      warranty: boolOf($('product-warranty').value),
+      rma: $('product-rma').value.trim() || null,
+      additionalInfo: $('product-additionalinfo').value.trim() || null,
     });
     sEl.value=''; selEl.style.display='none'; selProduct=null;
-    $('product-partnumber').value=''; $('product-partdesc').value=''; $('product-qty').value='1';
-    $('product-shiptolocation').value=''; $('product-shipmenttype').value=''; $('product-fromstock').value='';
-    $('product-installhours').value=''; $('product-po').value=''; $('product-returnrequired').value='0';
+    $('product-partnumber').value=''; $('product-qty').value='1'; $('product-vendor').value='';
+    $('product-shipping').value=''; $('product-shiptolocation').value=''; $('product-shiptoname').value='';
+    $('product-installmins').value=''; $('product-systemstatus').value=''; $('product-fromstock').value='';
+    $('product-partused').value=''; $('product-warranty').value=''; $('product-rma').value='';
     $('product-additionalinfo').value='';
     renderPartsTable();
     toast('Part added to list');
@@ -757,55 +790,42 @@ function initProdSearch() {
     const btn = $('submit-parts-request-btn');
     btn.disabled = true; btn.textContent = 'Submitting…';
     try {
-      if (cr217WorkorderNav === null) {
-        try { cr217WorkorderNav = await getLookupNavProperty('wc_partsrequest','cr217_workorder'); } catch(_) { cr217WorkorderNav = ''; }
+      // Customer Asset is copied from the work order (same as the Dynamics form default).
+      const assetId = wo && wo._msdyn_customerasset_value;
+      let failed = 0;
+      for (const d of draftParts) {
+        const payload = {
+          msdyn_name: d.product?.name || d.partNumber || 'Part',
+          msdyn_quantity: d.quantity,
+          'msdyn_workorder@odata.bind': `/msdyn_workorders(${woId})`,
+        };
+        if (d.product)  payload['msdyn_product@odata.bind']       = `/products(${d.product.id})`;
+        if (assetId)    payload['msdyn_customerasset@odata.bind']  = `/msdyn_customerassets(${assetId})`;
+        if (bookingId)  payload['msdyn_booking@odata.bind']        = `/bookableresourcebookings(${bookingId})`;
+        if (d.partNumber)         payload.cr217_newpartnumbernotinsystem  = d.partNumber;
+        if (d.vendor)             payload.cr217_vendor                    = d.vendor;
+        if (d.shipToName)         payload.cr217_shiptoname                = d.shipToName;
+        if (d.shipping != null)   payload.cr217_shipping                  = d.shipping;
+        if (d.shipToLocation != null) payload.cr217_shiptolocation        = d.shipToLocation;
+        if (d.installMinutes != null) payload.cr217_estimatedserviceinstalltime = d.installMinutes;
+        if (d.systemStatus != null)   payload.cr217_currentsystemstatus   = d.systemStatus;
+        if (d.fromStock != null)  payload.cr217_fromstock                 = d.fromStock;
+        if (d.partUsed != null)   payload.cr217_partused                  = d.partUsed;
+        if (d.warranty != null)   payload.cr217_warrantycontract          = d.warranty;
+        if (d.rma)                payload.cr217_rma                       = d.rma;
+        if (d.additionalInfo)     payload.cr217_additionalinformation     = d.additionalInfo;
+
+        try {
+          const id = await xrmCreate('msdyn_workorderproduct', payload);
+          // "Submit Parts" ribbon action = flag the part request as submitted.
+          try { await xrmUpdate('msdyn_workorderproduct', id, { pmich_new_partrequestsubmitted: true }); } catch(_) {}
+        } catch (e) { failed++; console.warn('WOP create failed:', e.message); }
       }
-      if (partNameNav === null) {
-        try { partNameNav = await getLookupNavProperty('wc_partsrequest','wc_partname'); } catch(_) { partNameNav = ''; }
-      }
-      // Combine every drafted part into a SINGLE parts order (one wc_partsrequest
-      // record). The header fields use the first part; the full itemized list of
-      // parts/quantities/ship-to is written into the notes so the whole order
-      // lives on one timeline entry.
-      const head = draftParts[0];
-      const totalQty = draftParts.reduce((s, d) => s + (parseFloat(d.quantity) || 0), 0);
-      const lineList = draftParts.map(d => {
-        const nm = d.displayName || d.partNumber || 'Part';
-        const bits = [`• ${nm}`];
-        if (d.partNumber) bits.push(`PN ${d.partNumber}`);
-        bits.push(`x${d.quantity || 1}`);
-        if (d.shipToLocation && SHIP_TO_LABELS[d.shipToLocation]) bits.push(`→ ${SHIP_TO_LABELS[d.shipToLocation]}`);
-        if (d.additionalNotes) bits.push(`(${d.additionalNotes})`);
-        return bits.join('  ');
-      }).join('\n');
-      const subject = draftParts.length === 1
-        ? `Parts Request - ${head.displayName || head.partNumber || 'Part'}${head.quantity?` (x${head.quantity})`:''}`
-        : `Parts Request - ${draftParts.length} items`;
-      const combinedNotes = [head.additionalNotes ? null : null, `Parts ordered:\n${lineList}`]
-        .filter(Boolean).join('\n\n');
-      const payload = {
-        subject,
-        'regardingobjectid_msdyn_workorder@odata.bind': `/msdyn_workorders(${woId})`,
-        wc_quantity: draftParts.length === 1 ? head.quantity : totalQty,
-        cr217_partsrequeststatus: 439110000,
-        wc_partnumber: head.partNumber || null,
-        wc_partdescription: head.partDescription,
-        wc_shiptolocation: head.shipToLocation ? parseInt(head.shipToLocation,10) : null,
-        wc_shipmenttype: head.shipmentType ? parseInt(head.shipmentType,10) : null,
-        new_inventorystock: head.inventoryStock ? parseInt(head.inventoryStock,10) : null,
-        new_estimatedinstallhours: head.installHours,
-        wc_purchaseordernumber: head.po,
-        wc_returnrequired: draftParts.some(d => d.returnRequired),
-        new_additionalnotes: combinedNotes,
-      };
-      if (cr217WorkorderNav) payload[`${cr217WorkorderNav}@odata.bind`] = `/msdyn_workorders(${woId})`;
-      if (partNameNav && head.product) payload[`${partNameNav}@odata.bind`] = `/products(${head.product.id})`;
-      await xrmCreate('wc_partsrequest', payload);
       draftParts = [];
       productsLoaded = false;
       timelineLoaded = false;
       await loadProducts();
-      toast('Parts order submitted');
+      toast(failed ? `Submitted with ${failed} error(s)` : 'Parts order submitted', !!failed);
     } catch(e) {
       toast('Failed: '+e.message, true);
     } finally {
@@ -823,6 +843,18 @@ function prettyActivityType(code) {
   return map[code] || String(code).replace(/_/g,' ').replace(/\b\w/g, ch => ch.toUpperCase());
 }
 function stripHtml(s) { return String(s||'').replace(/<[^>]*>/g,' ').replace(/&nbsp;/g,' ').replace(/&amp;/g,'&').replace(/\s+/g,' ').trim(); }
+// Like stripHtml but keeps line breaks so multi-line notes stay readable.
+function htmlToText(s) {
+  return String(s||'')
+    .replace(/<\s*br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|li|tr|h[1-6])\s*>/gi, '\n')
+    .replace(/<[^>]*>/g, '')
+    .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/[ \t]*\n[ \t]*/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
 async function loadTimeline() {
   const el = $('timeline-list');
   if (!woId) { el.innerHTML = `<div class="empty-msg">No work order linked</div>`; return; }
@@ -838,15 +870,29 @@ async function loadTimeline() {
     items.sort((a,b) => new Date(b.when) - new Date(a.when));
     timelineLoaded = true;
     if (!items.length) { el.innerHTML = `<div class="empty-msg">No timeline activity yet</div>`; return; }
-    el.innerHTML = items.map(it => `
+    el.innerHTML = items.map((it, i) => {
+      const body = it.body ? htmlToText(it.body) : '';
+      // "Long" = worth collapsing behind a toggle so the list stays scannable.
+      const long = body.length > 260 || body.split('\n').length > 5;
+      return `
       <div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 12px;">
         <div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline;">
           <span style="font-size:12px;font-weight:600;">${esc(it.title)}</span>
           <span style="font-size:11px;color:var(--muted2);white-space:nowrap;">${esc(fmtDate(it.when))}</span>
         </div>
         <div style="font-size:11px;color:var(--accent);margin-top:2px;">${esc(it.type)}${it.author?` · ${esc(it.author)}`:''}</div>
-        ${it.body?`<div style="font-size:12px;color:var(--muted2);margin-top:6px;white-space:pre-wrap;">${esc(stripHtml(it.body).slice(0,400))}</div>`:''}
-      </div>`).join('');
+        ${body ? `<div class="tl-body${long ? ' clamp' : ''}" data-i="${i}">${esc(body)}</div>${long ? `<button class="tl-toggle" data-i="${i}">Show more</button>` : ''}` : ''}
+      </div>`;
+    }).join('');
+
+    // Expand/collapse each event's full text
+    el.querySelectorAll('.tl-toggle').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const body = el.querySelector(`.tl-body[data-i="${btn.dataset.i}"]`);
+        const collapsed = body.classList.toggle('clamp');
+        btn.textContent = collapsed ? 'Show more' : 'Show less';
+      });
+    });
   } catch(e) { el.innerHTML = `<div class="empty-msg">Error: ${esc(e.message)}</div>`; }
 }
 
