@@ -216,11 +216,12 @@ async function loadData() {
         ? xrmGet('contact', contactId, '?$select=fullname,telephone1,mobilephone,emailaddress1,jobtitle').catch(() => null)
         : Promise.resolve(null),
       assetId
-        ? xrmGet('msdyn_customerasset', assetId, '?$select=msdyn_name,wc_assettag,msdyn_assettag,wc_seriallotnumber').catch(() => null)
+        ? xrmGet('msdyn_customerasset', assetId, '?$select=msdyn_name,wc_assettag,msdyn_assettag,wc_seriallotnumber,_msdyn_product_value').catch(() => null)
         : Promise.resolve(null),
       xrmList('msdyn_workorderincident', `?$filter=_msdyn_workorder_value eq ${woId}&$top=1`).catch(() => []),
       subStatusesP,
       loadEngineers().catch(() => {}),
+      loadAccountContract().catch(() => {}),
     ]);
 
     contact = contactR;
@@ -250,6 +251,65 @@ async function init() {
     $('wo-content').style.display = 'flex';
   } catch(e) {
     $('wo-loading').innerHTML = `<div style="color:var(--danger);text-align:center;padding:20px;max-width:400px;">${esc(e.message)}</div>`;
+  }
+}
+
+// Whether the work order's service account has an active service agreement (contract)
+// covering today. Drives the parts-form "Warranty/Contract" default + banner.
+let accountContract = null;
+async function loadAccountContract() {
+  accountContract = { active: false };
+  const acctId = wo && (wo._msdyn_serviceaccount_value || wo._msdyn_billingaccount_value);
+  if (!acctId) return;
+  try {
+    const ags = await xrmList('msdyn_agreement',
+      `?$select=msdyn_name,msdyn_startdate,msdyn_enddate,statecode,c5_hasexclusions,c5_coveragetype,_c5_slaterms_value` +
+      `&$filter=_msdyn_serviceaccount_value eq ${acctId} and statecode eq 0&$orderby=msdyn_enddate desc`);
+    const now = new Date();
+    const active = ags.filter(a => {
+      const s = a.msdyn_startdate ? new Date(a.msdyn_startdate) : null;
+      const e = a.msdyn_enddate   ? new Date(a.msdyn_enddate)   : null;
+      return (!s || s <= now) && (!e || e >= now);
+    });
+    if (active.length) {
+      const best = active[0]; // latest end date
+      accountContract = {
+        active: true,
+        count: active.length,
+        name: best.msdyn_name || '',
+        coverage: best['_c5_slaterms_value@OData.Community.Display.V1.FormattedValue']
+                  || best['c5_coveragetype@OData.Community.Display.V1.FormattedValue'] || '',
+        endDate: best.msdyn_enddate || null,
+        exclusions: !!best.c5_hasexclusions,
+      };
+    }
+  } catch(_) { accountContract = { active: false }; }
+}
+
+// Default the Warranty/Contract field from the account's contract status and show a banner.
+function applyContractToPartsForm() {
+  const sel = $('product-warranty');
+  if (!sel || !accountContract) return;
+  sel.value = accountContract.active ? 'true' : 'false';
+
+  let banner = $('contract-banner');
+  if (!banner) {
+    const grid = $('parts-form-card')?.querySelector('div[style*="grid-template-columns"]');
+    if (!grid) return;
+    banner = document.createElement('div');
+    banner.id = 'contract-banner';
+    banner.style.cssText = 'grid-column:1/4;font-size:12px;padding:8px 10px;border-radius:6px;';
+    grid.insertBefore(banner, grid.firstChild);
+  }
+  if (accountContract.active) {
+    banner.style.background = 'rgba(18,183,106,.15)'; banner.style.color = '#12b76a';
+    const parts = [`✓ Active contract`];
+    if (accountContract.coverage) parts.push(accountContract.coverage);
+    if (accountContract.endDate)  parts.push(`exp ${new Date(accountContract.endDate).toLocaleDateString(undefined, { year:'numeric', month:'short', day:'numeric' })}`);
+    banner.textContent = parts.join(' · ') + (accountContract.exclusions ? ' — has exclusions, verify parts coverage' : ' — parts covered');
+  } else {
+    banner.style.background = 'rgba(122,131,154,.15)'; banner.style.color = '#c4c9d2';
+    banner.textContent = 'No active service contract on this account — parts likely billable';
   }
 }
 
@@ -727,9 +787,10 @@ function initProdSearch() {
   toggleBtn.addEventListener('click', () => {
     const hidden = formCard.classList.toggle('hidden');
     toggleBtn.textContent = hidden ? '+ New Parts Request' : '– Hide Form';
-    if (!hidden) { loadPartsOptions(); $('product-search').focus(); }
+    if (!hidden) { loadPartsOptions(); applyContractToPartsForm(); $('product-search').focus(); }
   });
   loadPartsOptions();
+  applyContractToPartsForm();
 
   const sEl=$('product-search'), rEl=$('product-results'), selEl=$('product-selected');
   sEl.addEventListener('input', () => {
@@ -756,6 +817,13 @@ function initProdSearch() {
     const partNumber = $('product-partnumber').value.trim();
     const qty = parseFloat($('product-qty').value) || 1;
     if (!selProduct && !partNumber) { toast('Select a product or enter a part number', true); return; }
+    // Dynamics requires a Product on every Work Order Product. If the part isn't in
+    // the catalog (New Part # only), we fall back to the work order asset's product
+    // at submit time — but if there's no asset product to borrow, we can't proceed.
+    if (!selProduct && !(customerAsset && customerAsset._msdyn_product_value)) {
+      toast('This part isn’t in the catalog and the work order has no asset product to attach it to — please select a product.', true);
+      return;
+    }
     const boolOf = v => v === '' ? null : (v === 'true');
     const intOf  = v => v ? parseInt(v, 10) : null;
     draftParts.push({
@@ -778,9 +846,10 @@ function initProdSearch() {
     sEl.value=''; selEl.style.display='none'; selProduct=null;
     $('product-partnumber').value=''; $('product-qty').value='1'; $('product-vendor').value='';
     $('product-shipping').value=''; $('product-shiptolocation').value=''; $('product-shiptoname').value='';
-    $('product-installmins').value=''; $('product-systemstatus').value=''; $('product-fromstock').value='';
-    $('product-partused').value=''; $('product-warranty').value=''; $('product-rma').value='';
+    $('product-installmins').value=''; $('product-systemstatus').value=''; $('product-fromstock').value='false';
+    $('product-partused').value='true'; $('product-rma').value='';
     $('product-additionalinfo').value='';
+    applyContractToPartsForm(); // restore contract-based Warranty/Contract default
     renderPartsTable();
     toast('Part added to list');
   });
@@ -793,14 +862,18 @@ function initProdSearch() {
       // Customer Asset is copied from the work order (same as the Dynamics form default).
       const assetId = wo && wo._msdyn_customerasset_value;
       let failed = 0;
+      let firstError = '';
       for (const d of draftParts) {
         const payload = {
           msdyn_name: d.product?.name || d.partNumber || 'Part',
           msdyn_quantity: d.quantity,
           'msdyn_workorder@odata.bind': `/msdyn_workorders(${woId})`,
         };
-        if (d.product)  payload['msdyn_product@odata.bind']       = `/products(${d.product.id})`;
-        if (assetId)    payload['msdyn_customerasset@odata.bind']  = `/msdyn_customerassets(${assetId})`;
+        // Product is required by Dynamics. Use the picked catalog product, or fall
+        // back to the work order asset's product for out-of-catalog (New Part #) items.
+        const productId = d.product?.id || (customerAsset && customerAsset._msdyn_product_value) || null;
+        if (productId) payload['msdyn_product@odata.bind'] = `/products(${productId})`;
+        if (assetId)   payload['msdyn_customerasset@odata.bind'] = `/msdyn_customerassets(${assetId})`;
         if (bookingId)  payload['msdyn_booking@odata.bind']        = `/bookableresourcebookings(${bookingId})`;
         if (d.partNumber)         payload.cr217_newpartnumbernotinsystem  = d.partNumber;
         if (d.vendor)             payload.cr217_vendor                    = d.vendor;
@@ -819,13 +892,14 @@ function initProdSearch() {
           const id = await xrmCreate('msdyn_workorderproduct', payload);
           // "Submit Parts" ribbon action = flag the part request as submitted.
           try { await xrmUpdate('msdyn_workorderproduct', id, { pmich_new_partrequestsubmitted: true }); } catch(_) {}
-        } catch (e) { failed++; console.warn('WOP create failed:', e.message); }
+        } catch (e) { failed++; if (!firstError) firstError = e.message; console.warn('WOP create failed:', e.message); }
       }
       draftParts = [];
       productsLoaded = false;
       timelineLoaded = false;
       await loadProducts();
-      toast(failed ? `Submitted with ${failed} error(s)` : 'Parts order submitted', !!failed);
+      if (failed) { toast(`Failed (${failed}): ${firstError}`, true); console.error('Parts submit error:', firstError); }
+      else toast('Parts order submitted');
     } catch(e) {
       toast('Failed: '+e.message, true);
     } finally {

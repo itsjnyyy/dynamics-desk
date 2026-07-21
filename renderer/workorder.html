@@ -431,11 +431,11 @@
             </div>
             <div style="display:flex;flex-direction:column;gap:5px;">
               <span class="field-label">From Stock</span>
-              <select id="product-fromstock" class="field-input"><option value="">—</option><option value="true">Yes</option><option value="false">No</option></select>
+              <select id="product-fromstock" class="field-input"><option value="">—</option><option value="true">Yes</option><option value="false" selected>No</option></select>
             </div>
             <div style="display:flex;flex-direction:column;gap:5px;">
               <span class="field-label">Part Used</span>
-              <select id="product-partused" class="field-input"><option value="">—</option><option value="true">Yes</option><option value="false">No</option></select>
+              <select id="product-partused" class="field-input"><option value="">—</option><option value="true" selected>Yes</option><option value="false">No</option></select>
             </div>
             <div style="display:flex;flex-direction:column;gap:5px;">
               <span class="field-label">Warranty / Contract</span>
@@ -450,10 +450,12 @@
               <textarea id="product-additionalinfo" class="field-input" rows="2"></textarea>
             </div>
           </div>
-          <div style="margin-top:12px;display:flex;justify-content:space-between;align-items:center;">
-            <button class="btn btn-primary" id="submit-parts-request-btn" disabled>Submit Parts Order</button>
+          <div style="margin-top:12px;display:flex;justify-content:flex-end;align-items:center;">
             <button class="btn btn-primary btn-sm" id="add-product-btn">Add to List</button>
           </div>
+        </div>
+        <div style="margin-top:14px;display:flex;justify-content:flex-end;">
+          <button class="btn btn-primary" id="submit-parts-request-btn" disabled>Submit Parts Order</button>
         </div>
       </div>
 
