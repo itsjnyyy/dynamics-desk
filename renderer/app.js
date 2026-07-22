@@ -1505,7 +1505,52 @@ async function currentUserResourceId() {
   } catch (_) { return null; }
 }
 
-async function createTravelWorkOrder() {
+async function resourceIdByName(name) {
+  if (!name) return null;
+  try {
+    const res = await xrmFetch('bookableresource', `?$select=bookableresourceid&$filter=name eq '${name.replace(/'/g, "''")}'&$top=1`);
+    return res[0]?.bookableresourceid || null;
+  } catch (_) { return null; }
+}
+
+// Ask which team member + start time for a Travel Home WO. Duration is fixed at 1 hour.
+function askTravelDetails() {
+  return new Promise(resolve => {
+    if (!SCHEDULE_RESOURCES.length) { toast('No team members configured', true); resolve(null); return; }
+    const pad = n => String(n).padStart(2, '0');
+    const now = new Date();
+    const defVal = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
+    const fld = 'width:100%;padding:8px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;';
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9998;display:flex;align-items:center;justify-content:center;';
+    overlay.innerHTML = `
+      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:20px;width:360px;box-shadow:0 10px 40px rgba(0,0,0,.4);">
+        <div style="font-size:15px;font-weight:600;margin-bottom:14px;">Travel Home Work Order</div>
+        <label style="display:block;font-size:12px;color:var(--muted);margin-bottom:5px;">Team member</label>
+        <select id="tw-resource" style="${fld}margin-bottom:14px;">
+          ${SCHEDULE_RESOURCES.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('')}
+        </select>
+        <label style="display:block;font-size:12px;color:var(--muted);margin-bottom:5px;">Start time (1 hour)</label>
+        <input id="tw-start" type="datetime-local" style="${fld}margin-bottom:18px;" value="${defVal}"/>
+        <div style="display:flex;justify-content:flex-end;gap:8px;">
+          <button id="tw-cancel" class="btn btn-ghost btn-sm">Cancel</button>
+          <button id="tw-create" class="btn btn-primary btn-sm">Create</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const close = val => { overlay.remove(); resolve(val); };
+    overlay.querySelector('#tw-cancel').addEventListener('click', () => close(null));
+    overlay.addEventListener('click', e => { if (e.target === overlay) close(null); });
+    overlay.querySelector('#tw-create').addEventListener('click', () => {
+      const resourceName = overlay.querySelector('#tw-resource').value;
+      const startVal = overlay.querySelector('#tw-start').value;
+      if (!startVal) { overlay.querySelector('#tw-start').focus(); return; }
+      close({ resourceName, start: new Date(startVal) });
+    });
+  });
+}
+
+async function createTravelWorkOrder(details) {
   const btn = $('travel-wo-btn');
   if (!xrmReady) { toast('Not connected to Dynamics yet', true); return; }
   btn.disabled = true; const label = btn.textContent; btn.textContent = 'Creating…';
@@ -1524,11 +1569,11 @@ async function createTravelWorkOrder() {
     await bind('msdyn_priority',           TRAVEL_WO.priority);
     await bind('msdyn_pricelist',          TRAVEL_WO.pricelist);
     await bind('msdyn_serviceterritory',   TRAVEL_WO.serviceterritory);
-    // Reported By Contact = the signed-in user's contact record (e.g. "Your Name")
+    // Reported By Contact = the assigned team member's contact record.
     try {
-      const uname = String(await apiWv.executeJavaScript('Xrm.Utility.getGlobalContext().getUserName()') || '').trim();
-      if (uname && nav.msdyn_reportedbycontact) {
-        const contacts = await xrmFetch('contact', `?$select=contactid&$filter=fullname eq '${uname.replace(/'/g,"''")}'&$top=1`);
+      const memberName = String(details?.resourceName || '').trim();
+      if (memberName && nav.msdyn_reportedbycontact) {
+        const contacts = await xrmFetch('contact', `?$select=contactid&$filter=fullname eq '${memberName.replace(/'/g,"''")}'&$top=1`);
         if (contacts[0]) await bind('msdyn_reportedbycontact', contacts[0].contactid);
       }
     } catch (_) {}
@@ -1542,12 +1587,12 @@ async function createTravelWorkOrder() {
     //    append-permission check that blocked the earlier attempt).
     let bookingNote = '';
     try {
-      const resourceId = await currentUserResourceId();
-      if (!resourceId) throw new Error('Could not find your bookable resource');
+      const resourceId = await resourceIdByName(details.resourceName);
+      if (!resourceId) throw new Error('Could not find bookable resource for ' + details.resourceName);
       const scheduled = await xrmFetch('bookingstatus', `?$select=bookingstatusid&$filter=name eq 'Scheduled'&$orderby=createdon asc&$top=1`);
       const schedStatusId = scheduled[0]?.bookingstatusid;
       const bnav = await getNavPropMap('bookableresourcebooking');
-      const start = new Date();
+      const start = details.start;
       const end   = new Date(start.getTime() + TRAVEL_DURATION_MIN * 60000);
       const bPayload = {
         starttime: start.toISOString(),
@@ -1580,7 +1625,12 @@ async function createTravelWorkOrder() {
     btn.disabled = false; btn.textContent = label;
   }
 }
-$('travel-wo-btn').addEventListener('click', createTravelWorkOrder);
+$('travel-wo-btn').addEventListener('click', async () => {
+  if (!xrmReady) { toast('Not connected to Dynamics yet', true); return; }
+  const details = await askTravelDetails();
+  if (!details) return;
+  createTravelWorkOrder(details);
+});
 
 // ── Auto-update ──────────────────────────────────────────────────────────────
 let pendingUpdateAsset = null;
