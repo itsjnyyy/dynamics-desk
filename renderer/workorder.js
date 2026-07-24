@@ -173,7 +173,7 @@ async function xrmDelete(entity, id) {
 }
 
 // ── State ─────────────────────────────────────────────────────────────────────
-let booking = null, wo = null, woId = null, incident = null, contact = null, customerAsset = null, bookingStatuses = [], resources = [], subStatuses = [], dirty = {}, substatusNavProp = null;
+let booking = null, wo = null, woId = null, incident = null, contact = null, customerAsset = null, bookingStatuses = [], resources = [], subStatuses = [], workOrderTypes = [], dirty = {}, substatusNavProp = null, workordertypeNav = null;
 let tasksLoaded = false, productsLoaded = false, notesLoaded = false, prodSearchInited = false;
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
@@ -198,6 +198,8 @@ async function loadData() {
     // it immediately and await it later (runs concurrently with everything else).
     const subStatusesP = xrmList('msdyn_workordersubstatus',
       '?$select=msdyn_workordersubstatusid,msdyn_name&$orderby=msdyn_name asc').catch(() => []);
+    const woTypesP = xrmList('msdyn_workordertype',
+      '?$select=msdyn_workordertypeid,msdyn_name&$orderby=msdyn_name asc').catch(() => []);
 
     wo = await xrmGet('msdyn_workorder', woId,
       '?$select=msdyn_name,msdyn_systemstatus,msdyn_workordersummary,msdyn_instructions,' +
@@ -211,7 +213,7 @@ async function loadData() {
     // off at once instead of one round-trip at a time.
     const contactId = wo._msdyn_reportedbycontact_value;
     const assetId = wo._msdyn_customerasset_value;
-    const [contactR, assetR, incidents, subStatusesR] = await Promise.all([
+    const [contactR, assetR, incidents, subStatusesR, woTypesR] = await Promise.all([
       contactId
         ? xrmGet('contact', contactId, '?$select=fullname,telephone1,mobilephone,emailaddress1,jobtitle').catch(() => null)
         : Promise.resolve(null),
@@ -220,9 +222,11 @@ async function loadData() {
         : Promise.resolve(null),
       xrmList('msdyn_workorderincident', `?$filter=_msdyn_workorder_value eq ${woId}&$top=1`).catch(() => []),
       subStatusesP,
+      woTypesP,
       loadEngineers().catch(() => {}),
       loadAccountContract().catch(() => {}),
     ]);
+    workOrderTypes = woTypesR || [];
 
     contact = contactR;
     customerAsset = assetR;
@@ -241,7 +245,7 @@ async function init() {
     await loadData();
 
     if (booking) { buildStatusDropdown(); buildResourceDropdown(); }
-    if (wo) buildSubstatusDropdown();
+    if (wo) { buildSubstatusDropdown(); buildWorkOrderTypeDropdown(); }
     renderAll();
     listenEdits();
     wireOpenDynamics();
@@ -323,7 +327,7 @@ function wireRefresh() {
       await loadData();
       dirty = {};
       if (booking) { buildStatusDropdown(); buildResourceDropdown(); }
-      if (wo) buildSubstatusDropdown();
+      if (wo) { buildSubstatusDropdown(); buildWorkOrderTypeDropdown(); }
       renderAll();
       $('save-btn').classList.add('hidden');
       $('discard-btn').classList.add('hidden');
@@ -361,6 +365,23 @@ function buildSubstatusDropdown() {
     `<option value="${s.msdyn_workordersubstatusid}">${esc(s.msdyn_name)}</option>`
   ).join('');
   sel.value = wo._msdyn_substatus_value || '';
+}
+
+function buildWorkOrderTypeDropdown() {
+  const sel = $('f-workordertype');
+  if (!sel) return;
+  const current = wo._msdyn_workordertype_value || '';
+  const currentName = wo['_msdyn_workordertype_value@OData.Community.Display.V1.FormattedValue'] || '';
+  const opts = workOrderTypes.slice();
+  // Make sure the work order's current type is always an option, even if the list
+  // hasn't loaded (so the field never appears blank for an already-typed WO).
+  if (current && !opts.some(t => t.msdyn_workordertypeid === current)) {
+    opts.unshift({ msdyn_workordertypeid: current, msdyn_name: currentName || '(current)' });
+  }
+  sel.innerHTML = '<option value="">—</option>' + opts.map(t =>
+    `<option value="${t.msdyn_workordertypeid}">${esc(t.msdyn_name)}</option>`
+  ).join('');
+  sel.value = current;
 }
 
 function wireOpenDynamics() {
@@ -404,7 +425,6 @@ function renderAll() {
   // WO fields
   const WO_STATUS = {690970000:'Unscheduled',690970001:'Scheduled',690970002:'In Progress',690970003:'Completed',690970004:'Posted',690970005:'Canceled'};
   set('d-wo-status', wo ? (WO_STATUS[wo.msdyn_systemstatus] || fv(wo,'msdyn_systemstatus')) : '—');
-  set('d-type',       wo ? fv(wo,'_msdyn_workordertype_value')   : '—');
   set('d-priority',   wo ? fv(wo,'_msdyn_priority_value')        : '—');
   set('d-account',    wo ? fv(wo,'_msdyn_serviceaccount_value')  : '—');
   set('d-contact-name',  contact?.fullname      || '—');
@@ -449,6 +469,7 @@ function listenEdits() {
     showSave();
   });
   $('f-substatus').addEventListener('change', e => { dirty._substatus = e.target.value; showSave(); });
+  $('f-workordertype')?.addEventListener('change', e => { dirty._workordertype = e.target.value; showSave(); });
   $('f-start').addEventListener('input',   e => { dirty._starttime = e.target.value; showSave(); });
   $('f-end').addEventListener('input',     e => { dirty._endtime   = e.target.value; showSave(); });
   $('f-arrival').addEventListener('input', e => { dirty._actualarrival = e.target.value; showSave(); });
@@ -491,6 +512,11 @@ async function save() {
       await xrmUpdate('msdyn_workorder', woId, { [`${substatusNavProp}@odata.bind`]: `/msdyn_workordersubstatuses(${snap._substatus})` });
     }
 
+    if (woId && snap._workordertype) {
+      if (!workordertypeNav) workordertypeNav = await getLookupNavProperty('msdyn_workorder', 'msdyn_workordertype');
+      await xrmUpdate('msdyn_workorder', woId, { [`${workordertypeNav}@odata.bind`]: `/msdyn_workordertypes(${snap._workordertype})` });
+    }
+
 
     // Sync local state
     if (snap._bookingStatus) {
@@ -504,6 +530,11 @@ async function save() {
     if (snap._resource)     booking._resource_value = snap._resource;
     if (wo) Object.assign(wo, wPatch);
     if (wo && snap._substatus) wo._msdyn_substatus_value = snap._substatus;
+    if (wo && snap._workordertype) {
+      wo._msdyn_workordertype_value = snap._workordertype;
+      const t = workOrderTypes.find(t => t.msdyn_workordertypeid === snap._workordertype);
+      if (t) wo['_msdyn_workordertype_value@OData.Community.Display.V1.FormattedValue'] = t.msdyn_name;
+    }
 
     dirty = {};
     $('save-btn').classList.add('hidden');
@@ -516,7 +547,7 @@ async function save() {
 function discard() {
   dirty = {};
   if (booking) { buildStatusDropdown(); buildResourceDropdown(); }
-  if (wo) buildSubstatusDropdown();
+  if (wo) { buildSubstatusDropdown(); buildWorkOrderTypeDropdown(); }
   renderAll();
   $('save-btn').classList.add('hidden');
   $('discard-btn').classList.add('hidden');
