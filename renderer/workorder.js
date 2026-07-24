@@ -174,7 +174,7 @@ async function xrmDelete(entity, id) {
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let booking = null, wo = null, woId = null, incident = null, contact = null, customerAsset = null, bookingStatuses = [], resources = [], subStatuses = [], workOrderTypes = [], dirty = {}, substatusNavProp = null, workordertypeNav = null;
-let tasksLoaded = false, productsLoaded = false, notesLoaded = false, prodSearchInited = false;
+let productsLoaded = false, notesLoaded = false, prodSearchInited = false;
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 async function loadData() {
@@ -794,51 +794,12 @@ document.querySelectorAll('.wo-tab').forEach(btn => {
     document.querySelectorAll('.wo-panel').forEach(p => p.classList.add('hidden'));
     btn.classList.add('active');
     $(`panel-${btn.dataset.tab}`).classList.remove('hidden');
-    if (btn.dataset.tab==='tasks'    && !tasksLoaded)    loadTasks();
     if (btn.dataset.tab==='products') { initProdSearch(); loadProducts(); }
     if (btn.dataset.tab==='timeline') loadTimeline();
     if (btn.dataset.tab==='notes'    && !notesLoaded)    loadNotes();
     if (btn.dataset.tab==='details') { /* always loaded */ }
   });
 });
-
-// ── Service Tasks ─────────────────────────────────────────────────────────────
-async function loadTasks() {
-  if (!woId) { $('tasks-body').innerHTML=`<tr><td colspan="5"><div class="empty-msg">No work order linked</div></td></tr>`; return; }
-  try {
-    const rows = await xrmList('msdyn_workorderservicetask',
-      `?$select=msdyn_workorderservicetaskid,msdyn_name,_msdyn_tasktype_value,msdyn_description,msdyn_percentcomplete,msdyn_estimatedduration&$filter=_msdyn_workorder_value eq ${woId}&$orderby=msdyn_name asc`);
-    tasksLoaded = true;
-    if (!rows.length) { $('tasks-body').innerHTML=`<tr><td colspan="5"><div class="empty-msg">No service tasks</div></td></tr>`; return; }
-    $('tasks-body').innerHTML = rows.map(t => {
-      const type = t['_msdyn_tasktype_value@OData.Community.Display.V1.FormattedValue']||'—';
-      const pct  = t.msdyn_percentcomplete ?? 0;
-      const done = pct === 100;
-      const dur  = t.msdyn_estimatedduration!=null ? `${t.msdyn_estimatedduration} min` : '—';
-      return `<tr class="${done?'task-done':''}" data-tid="${t.msdyn_workorderservicetaskid}">
-        <td><label class="task-label"><input type="checkbox" class="task-cb" ${done?'checked':''}><span>${esc(t.msdyn_name||'—')}</span></label></td>
-        <td class="col-muted">${esc(type)}</td>
-        <td><div class="pct-wrap"><div class="pct-bar"><div class="pct-fill" style="width:${pct}%"></div></div><span class="pct-lbl">${pct}%</span></div></td>
-        <td class="col-muted">${esc(dur)}</td>
-        <td class="col-muted">${esc(t.msdyn_description||'—')}</td>
-      </tr>`;
-    }).join('');
-    $('tasks-body').querySelectorAll('.task-cb').forEach(cb => {
-      cb.addEventListener('change', async () => {
-        const row = cb.closest('tr'); cb.disabled = true;
-        const done = cb.checked;
-        try {
-          await xrmUpdate('msdyn_workorderservicetask', row.dataset.tid, {msdyn_percentcomplete:done?100:0});
-          row.classList.toggle('task-done', done);
-          row.querySelector('.pct-fill').style.width = (done?100:0)+'%';
-          row.querySelector('.pct-lbl').textContent  = (done?100:0)+'%';
-          toast(done?'Marked complete':'Marked incomplete');
-        } catch(e) { cb.checked=!done; toast('Failed: '+e.message, true); }
-        finally { cb.disabled=false; }
-      });
-    });
-  } catch(e) { $('tasks-body').innerHTML=`<tr><td colspan="5"><div class="empty-msg">Error: ${esc(e.message)}</div></td></tr>`; }
-}
 
 // ── Parts Request (Work Order Products) ──────────────────────────────────────
 // Parts are ordered exactly like the Dynamics UI: each part is a msdyn_workorderproduct
