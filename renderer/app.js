@@ -1232,8 +1232,19 @@ function renderTeamDraft() {
     return;
   }
   list.innerHTML = teamDraft.map((name, i) =>
-    `<div class="team-mgr-item"><span>${esc(name)}</span><button data-rm="${i}" title="Remove">&times;</button></div>`
+    `<div class="team-mgr-item"><span>${esc(name)}</span><span class="team-mgr-btns">` +
+      `<button class="team-mgr-move" data-up="${i}" title="Move up"${i === 0 ? ' disabled' : ''}>&#9650;</button>` +
+      `<button class="team-mgr-move" data-down="${i}" title="Move down"${i === teamDraft.length - 1 ? ' disabled' : ''}>&#9660;</button>` +
+      `<button data-rm="${i}" title="Remove">&times;</button>` +
+    `</span></div>`
   ).join('');
+  const move = (i, j) => { [teamDraft[i], teamDraft[j]] = [teamDraft[j], teamDraft[i]]; renderTeamDraft(); };
+  list.querySelectorAll('[data-up]').forEach(btn => {
+    btn.addEventListener('click', () => { const i = +btn.dataset.up; if (i > 0) move(i, i - 1); });
+  });
+  list.querySelectorAll('[data-down]').forEach(btn => {
+    btn.addEventListener('click', () => { const i = +btn.dataset.down; if (i < teamDraft.length - 1) move(i, i + 1); });
+  });
   list.querySelectorAll('[data-rm]').forEach(btn => {
     btn.addEventListener('click', () => { teamDraft.splice(+btn.dataset.rm, 1); renderTeamDraft(); });
   });
