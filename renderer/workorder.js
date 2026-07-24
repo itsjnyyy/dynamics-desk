@@ -404,13 +404,137 @@ function buildStatusDropdown() {
   sel.value = (current ? seen.get(current.name)?.bookingstatusid : null) || booking._bookingstatus_value || '';
 }
 
+function openAccount(accountId, name) {
+  if (!accountId) return;
+  openAccountDetail(accountId);
+}
+
+// Account detail modal shown inside this window — mirrors the Accounts-tab modal in
+// the main window (openAccountDetail in app.js).
+async function openAccountDetail(accountId) {
+  const modal = $('account-modal'), body = $('account-modal-body');
+  if (!modal || !body) return;
+  body.innerHTML = '<div class="inline-loading"><div class="spinner"></div></div>';
+  modal.classList.remove('hidden');
+  try {
+    const [accounts, contacts, workOrders] = await Promise.all([
+      xrmList('account', `?$select=name,emailaddress1,telephone1,address1_line1,address1_city,address1_stateorprovince,address1_postalcode,websiteurl,description&$filter=accountid eq ${accountId}`),
+      xrmList('contact', `?$select=contactid,fullname,emailaddress1,mobilephone,telephone1,jobtitle&$filter=_parentcustomerid_value eq ${accountId}&$orderby=fullname asc`),
+      xrmList('msdyn_workorder', `?$select=msdyn_workorderid,msdyn_name,msdyn_systemstatus,createdon&$filter=_msdyn_serviceaccount_value eq ${accountId}&$orderby=createdon desc&$top=10`).catch(() => []),
+    ]);
+    const a = accounts[0];
+    if (!a) { body.innerHTML = '<div class="am-empty">Account not found.</div>'; return; }
+    const address = [a.address1_line1, a.address1_city, a.address1_stateorprovince, a.address1_postalcode].filter(Boolean).join(', ');
+    body.innerHTML = `
+      <div class="am-title">${esc(a.name || '—')}</div>
+      <div class="am-sub">${esc(address || 'No address on file')}</div>
+      <div class="am-grid">
+        <div><div class="am-field-label">Phone</div><div class="am-field-value">${esc(a.telephone1||'—')}</div></div>
+        <div><div class="am-field-label">Email</div><div class="am-field-value">${esc(a.emailaddress1||'—')}</div></div>
+        <div><div class="am-field-label">Website</div><div class="am-field-value">${esc(a.websiteurl||'—')}</div></div>
+      </div>
+      <div class="am-section-title">Contacts (${contacts.length})</div>
+      <div class="am-list">
+        ${contacts.length ? contacts.map(c => `
+          <div class="am-list-item am-clickable" data-contact-id="${esc(c.contactid)}">
+            <div class="am-list-item-title">${esc(c.fullname||'—')}</div>
+            <div class="am-list-item-sub">${esc(c.jobtitle || '')}${c.jobtitle && (c.mobilephone||c.telephone1||c.emailaddress1) ? ' · ' : ''}${esc(c.mobilephone||c.telephone1||'')}${(c.mobilephone||c.telephone1) && c.emailaddress1 ? ' · ' : ''}${esc(c.emailaddress1||'')}</div>
+          </div>`).join('') : '<div class="am-empty">No contacts on file.</div>'}
+      </div>
+      <div class="am-section-title">Recent Work Orders</div>
+      <div class="am-list">
+        ${workOrders.length ? workOrders.map(w => `
+          <div class="am-list-item am-clickable" data-wo-id="${esc(w.msdyn_workorderid)}">
+            <div class="am-list-item-title">${esc(w.msdyn_name||'—')}</div>
+            <div class="am-list-item-sub">${esc(w['msdyn_systemstatus@OData.Community.Display.V1.FormattedValue']||'')}${fmtDate(w.createdon) !== '—' ? ' · ' + fmtDate(w.createdon) : ''}</div>
+          </div>`).join('') : '<div class="am-empty">No work orders on file.</div>'}
+      </div>`;
+    body.querySelectorAll('[data-contact-id]').forEach(el =>
+      el.addEventListener('click', () => window.api.openContact(el.dataset.contactId, orgUrl, 'Contact')));
+    body.querySelectorAll('[data-wo-id]').forEach(el =>
+      el.addEventListener('click', () => window.api.openWorkOrderDirect(el.dataset.woId, orgUrl, 'Work Order')));
+  } catch (e) {
+    body.innerHTML = '<div class="am-empty">Failed to load account details.</div>';
+    console.error('Account detail error:', e);
+  }
+}
+$('account-modal-close')?.addEventListener('click', () => $('account-modal').classList.add('hidden'));
+$('account-modal')?.addEventListener('click', e => { if (e.target.id === 'account-modal') $('account-modal').classList.add('hidden'); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') $('account-modal')?.classList.add('hidden'); });
+
+// Customer asset detail modal — mirrors the Assets-tab modal in the main window.
+const ASSETS_DETAIL_SELECT = 'msdyn_customerassetid,msdyn_name,wc_assettag,msdyn_assettag,wc_seriallotnumber,' +
+  'statuscode,wc_knumber,msdyn_manufacturingdate,_msdyn_parentasset_value,_wc_warrantyservicecontract_value,' +
+  '_msdyn_masterasset_value,_msdyn_product_value,_wc_manufacturer_value,_msdyn_workorderproduct_value';
+
+async function openAssetDetail(assetId) {
+  const modal = $('asset-modal'), body = $('asset-modal-body');
+  if (!modal || !body || !assetId) return;
+  body.innerHTML = '<div class="inline-loading"><div class="spinner"></div></div>';
+  modal.classList.remove('hidden');
+  try {
+    const records = await xrmList('msdyn_customerasset', `?$select=${ASSETS_DETAIL_SELECT}&$filter=msdyn_customerassetid eq ${assetId}`);
+    const a = records[0];
+    if (!a) { body.innerHTML = '<div class="am-empty">Asset not found.</div>'; return; }
+    const tag = a.wc_assettag || a.msdyn_assettag || '—';
+    body.innerHTML = `
+      <div class="am-title">${esc(a.msdyn_name || '—')}</div>
+      <div class="am-sub">Asset Tag: ${esc(tag)}</div>
+      <div class="am-grid">
+        <div><div class="am-field-label">Asset Status</div><div class="am-field-value">${esc(fv(a,'statuscode')||'—')}</div></div>
+        <div><div class="am-field-label">K Number</div><div class="am-field-value">${esc(a.wc_knumber||'—')}</div></div>
+        <div><div class="am-field-label">Parent Asset</div><div class="am-field-value">${esc(fv(a,'_msdyn_parentasset_value')||'—')}</div></div>
+        <div><div class="am-field-label">Manufacturing Date</div><div class="am-field-value">${esc(fmtDate(a.msdyn_manufacturingdate)||'—')}</div></div>
+        <div><div class="am-field-label">Warranty Service Contract</div><div class="am-field-value">${esc(fv(a,'_wc_warrantyservicecontract_value')||'—')}</div></div>
+        <div><div class="am-field-label">Top-Level Asset</div><div class="am-field-value">${esc(fv(a,'_msdyn_masterasset_value')||'—')}</div></div>
+        <div><div class="am-field-label">Product</div><div class="am-field-value">${esc(fv(a,'_msdyn_product_value')||'—')}</div></div>
+        <div><div class="am-field-label">Manufacturer</div><div class="am-field-value">${esc(fv(a,'_wc_manufacturer_value')||'—')}</div></div>
+        <div><div class="am-field-label">Work Order Product</div><div class="am-field-value">${esc(fv(a,'_msdyn_workorderproduct_value')||'—')}</div></div>
+        <div><div class="am-field-label">Serial/Lot #</div><div class="am-field-value">${esc(a.wc_seriallotnumber||'—')}</div></div>
+      </div>`;
+  } catch (e) {
+    body.innerHTML = '<div class="am-empty">Failed to load asset details.</div>';
+    console.error('Asset detail error:', e);
+  }
+}
+$('asset-modal-close')?.addEventListener('click', () => $('asset-modal').classList.add('hidden'));
+$('asset-modal')?.addEventListener('click', e => { if (e.target.id === 'asset-modal') $('asset-modal').classList.add('hidden'); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') $('asset-modal')?.classList.add('hidden'); });
+// Set an element's text and, when an account id is present, make it a clickable link
+// that opens the account detail modal.
+function setAccountLink(id, accountId, name) {
+  const el = $(id); if (!el) return;
+  el.textContent = name || '—';
+  if (accountId) {
+    el.style.cursor = 'pointer';
+    el.style.color = 'var(--accent)';
+    el.title = 'Open account';
+    el.onclick = () => openAccount(accountId, name);
+  } else {
+    el.style.cursor = ''; el.style.color = ''; el.title = ''; el.onclick = null;
+  }
+}
+// Same, for a customer asset -> opens the asset detail modal.
+function setAssetLink(id, assetId, name) {
+  const el = $(id); if (!el) return;
+  el.textContent = name || '—';
+  if (assetId) {
+    el.style.cursor = 'pointer';
+    el.style.color = 'var(--accent)';
+    el.title = 'Open asset';
+    el.onclick = () => openAssetDetail(assetId);
+  } else {
+    el.style.cursor = ''; el.style.color = ''; el.title = ''; el.onclick = null;
+  }
+}
+
 function renderAll() {
   const woNum      = wo?.msdyn_name || '';
   const account    = wo ? fv(wo,'_msdyn_serviceaccount_value') : '';
 
   $('titlebar-label').textContent = woNum || booking?.name || 'Work Order';
   $('wo-number').textContent      = woNum || '—';
-  $('wo-account').textContent     = account;
+  setAccountLink('wo-account', wo?._msdyn_serviceaccount_value, account);
   $('wo-booking-ref').textContent = booking?.name ? `Booking: ${booking.name}` : '';
   document.title = woNum || booking?.name || 'Work Order';
 
@@ -426,14 +550,14 @@ function renderAll() {
   const WO_STATUS = {690970000:'Unscheduled',690970001:'Scheduled',690970002:'In Progress',690970003:'Completed',690970004:'Posted',690970005:'Canceled'};
   set('d-wo-status', wo ? (WO_STATUS[wo.msdyn_systemstatus] || fv(wo,'msdyn_systemstatus')) : '—');
   set('d-priority',   wo ? fv(wo,'_msdyn_priority_value')        : '—');
-  set('d-account',    wo ? fv(wo,'_msdyn_serviceaccount_value')  : '—');
+  setAccountLink('d-account', wo?._msdyn_serviceaccount_value, wo ? fv(wo,'_msdyn_serviceaccount_value') : '—');
   set('d-contact-name',  contact?.fullname      || '—');
   set('d-contact-phone', contact?.telephone1 || contact?.mobilephone || '—');
   set('d-contact-email', contact?.emailaddress1 || '—');
   set('d-contact-title', contact?.jobtitle      || '');
-  set('d-billing',    wo ? fv(wo,'_msdyn_billingaccount_value')  : '—');
+  setAccountLink('d-billing', wo?._msdyn_billingaccount_value, wo ? fv(wo,'_msdyn_billingaccount_value') : '—');
   set('d-territory',  wo ? fv(wo,'_msdyn_serviceterritory_value'): '—');
-  set('d-asset-tag',     wo ? fv(wo,'_msdyn_customerasset_value') : '—');
+  setAssetLink('d-asset-tag', wo?._msdyn_customerasset_value, wo ? fv(wo,'_msdyn_customerasset_value') : '—');
   set('d-asset-tagnum',  customerAsset?.__tag    || '—');
   set('d-asset-serial',  customerAsset?.__serial || '—');
   set('d-win-start',  fmtDate(wo?.msdyn_datewindowstart));
