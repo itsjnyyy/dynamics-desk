@@ -920,17 +920,30 @@ function initProdSearch() {
         if (d.additionalInfo)     payload.cr217_additionalinformation     = d.additionalInfo;
 
         try {
-          const id = await xrmCreate('msdyn_workorderproduct', payload);
-          // "Submit Parts" ribbon action = flag the part request as submitted.
-          try { await xrmUpdate('msdyn_workorderproduct', id, { pmich_new_partrequestsubmitted: true }); } catch(_) {}
+          // Create the part as UNsubmitted; the submit step below flags it (matches
+          // the Dynamics flow of "add parts, then Submit Parts").
+          await xrmCreate('msdyn_workorderproduct', payload);
         } catch (e) { failed++; if (!firstError) firstError = e.message; console.warn('WOP create failed:', e.message); }
       }
+
+      // Replicate the Dynamics "Submit Parts" button exactly (PartRequest.submitPartOrder):
+      // flag unsubmitted work order products AND create the wc_partsrequest activity that
+      // posts to the timeline and notifies the parts team.
+      let submitNote = '';
+      try {
+        const n = await submitPartsForWorkOrder();
+        if (!n) submitNote = ' (nothing to submit)';
+      } catch (se) {
+        submitNote = ' — but the SUBMIT step failed: ' + se.message + ' (parts team NOT notified)';
+        console.error('Submit-parts step failed:', se);
+      }
+
       draftParts = [];
       productsLoaded = false;
       timelineLoaded = false;
       await loadProducts();
-      if (failed) { toast(`Failed (${failed}): ${firstError}`, true); console.error('Parts submit error:', firstError); }
-      else toast('Parts order submitted');
+      if (failed) { toast(`Created with ${failed} error(s): ${firstError}`, true); console.error('Parts create error:', firstError); }
+      else toast('Parts order submitted' + submitNote, !!submitNote);
     } catch(e) {
       toast('Failed: '+e.message, true);
     } finally {
@@ -938,6 +951,54 @@ function initProdSearch() {
       btn.disabled = !draftParts.length;
     }
   });
+}
+
+// Build the HTML parts table for the parts-request activity — identical format to the
+// Dynamics "Submit Parts" web resource (buildPartsDetailsHTML in PartRequest.js).
+function buildPartsDetailsHTML(records) {
+  let body = "The following parts have been requested:<br><br>";
+  body += "<table border='1' cellpadding='5' cellspacing='0' style='border-collapse: collapse; width: 100%;'>";
+  body += "<tr style='background-color: #0078d4; color: white;'>";
+  body += "<th style='padding: 8px; text-align: left;'>Product</th>";
+  body += "<th style='padding: 8px; text-align: center;'>Quantity</th>";
+  body += "</tr>";
+  records.forEach(rec => {
+    const productName = rec.msdyn_name || "Unknown Product";
+    const quantity = rec.msdyn_quantity || 0;
+    body += "<tr>";
+    body += "<td style='padding: 8px;'>" + productName + "</td>";
+    body += "<td style='padding: 8px; text-align: center;'>" + quantity + "</td>";
+    body += "</tr>";
+  });
+  body += "</table>";
+  body += "<br><em>Submitted: " + new Date().toLocaleString() + "</em>";
+  return body;
+}
+
+// Replicate the Dynamics "Submit Parts" button (PartRequest.submitPartOrder): flag all
+// unsubmitted work order products as submitted and create the wc_partsrequest activity
+// (timeline entry + parts-team notification). Returns how many parts were submitted.
+async function submitPartsForWorkOrder() {
+  if (!woId) return 0;
+  const woName = wo?.msdyn_name || 'Work Order';
+  const records = await xrmList('msdyn_workorderproduct',
+    `?$select=msdyn_workorderproductid,msdyn_name,msdyn_quantity,msdyn_lineorder,msdyn_description` +
+    `&$filter=_msdyn_workorder_value eq ${woId} and pmich_new_partrequestsubmitted eq false&$orderby=msdyn_lineorder asc`);
+  if (!records.length) return 0;
+
+  const partsDetails = buildPartsDetailsHTML(records);
+  // Mark every unsubmitted part as submitted (in parallel, like the web resource).
+  await Promise.all(records.map(rec =>
+    xrmUpdate('msdyn_workorderproduct', rec.msdyn_workorderproductid, { pmich_new_partrequestsubmitted: true })
+  ));
+  // Create the Parts Request activity — this is what hits the timeline and notifies the team.
+  await xrmCreate('wc_partsrequest', {
+    subject: 'Part Request - ' + woName,
+    description: partsDetails,
+    statecode: 0,
+    'regardingobjectid_msdyn_workorder@odata.bind': `/msdyn_workorders(${woId})`,
+  });
+  return records.length;
 }
 
 // ── Timeline ───────────────────────────────────────────────────────────────────
