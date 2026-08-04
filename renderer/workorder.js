@@ -417,10 +417,11 @@ async function openAccountDetail(accountId) {
   body.innerHTML = '<div class="inline-loading"><div class="spinner"></div></div>';
   modal.classList.remove('hidden');
   try {
-    const [accounts, contacts, workOrders] = await Promise.all([
+    const [accounts, contacts, workOrders, assets] = await Promise.all([
       xrmList('account', `?$select=name,emailaddress1,telephone1,address1_line1,address1_city,address1_stateorprovince,address1_postalcode,websiteurl,description&$filter=accountid eq ${accountId}`),
       xrmList('contact', `?$select=contactid,fullname,emailaddress1,mobilephone,telephone1,jobtitle&$filter=_parentcustomerid_value eq ${accountId}&$orderby=fullname asc`),
       xrmList('msdyn_workorder', `?$select=msdyn_workorderid,msdyn_name,msdyn_systemstatus,createdon&$filter=_msdyn_serviceaccount_value eq ${accountId}&$orderby=createdon desc&$top=10`).catch(() => []),
+      xrmList('msdyn_customerasset', `?$select=msdyn_customerassetid,msdyn_name,wc_assettag,msdyn_assettag,wc_knumber,wc_seriallotnumber,statuscode&$filter=_msdyn_account_value eq ${accountId}&$orderby=msdyn_name asc&$top=200`).catch(() => []),
     ]);
     const a = accounts[0];
     if (!a) { body.innerHTML = '<div class="am-empty">Account not found.</div>'; return; }
@@ -433,24 +434,45 @@ async function openAccountDetail(accountId) {
         <div><div class="am-field-label">Email</div><div class="am-field-value">${esc(a.emailaddress1||'—')}</div></div>
         <div><div class="am-field-label">Website</div><div class="am-field-value">${esc(a.websiteurl||'—')}</div></div>
       </div>
-      <div class="am-section-title">Contacts (${contacts.length})</div>
-      <div class="am-list">
-        ${contacts.length ? contacts.map(c => `
-          <div class="am-list-item am-clickable" data-contact-id="${esc(c.contactid)}">
-            <div class="am-list-item-title">${esc(c.fullname||'—')}</div>
-            <div class="am-list-item-sub">${esc(c.jobtitle || '')}${c.jobtitle && (c.mobilephone||c.telephone1||c.emailaddress1) ? ' · ' : ''}${esc(c.mobilephone||c.telephone1||'')}${(c.mobilephone||c.telephone1) && c.emailaddress1 ? ' · ' : ''}${esc(c.emailaddress1||'')}</div>
-          </div>`).join('') : '<div class="am-empty">No contacts on file.</div>'}
+      <div class="am-section am-collapsed">
+        <div class="am-section-title am-toggle">Contacts (${contacts.length})<span class="am-caret">&#9656;</span></div>
+        <div class="am-list">
+          ${contacts.length ? contacts.map(c => `
+            <div class="am-list-item am-clickable" data-contact-id="${esc(c.contactid)}">
+              <div class="am-list-item-title">${esc(c.fullname||'—')}</div>
+              <div class="am-list-item-sub">${esc(c.jobtitle || '')}${c.jobtitle && (c.mobilephone||c.telephone1||c.emailaddress1) ? ' · ' : ''}${esc(c.mobilephone||c.telephone1||'')}${(c.mobilephone||c.telephone1) && c.emailaddress1 ? ' · ' : ''}${esc(c.emailaddress1||'')}</div>
+            </div>`).join('') : '<div class="am-empty">No contacts on file.</div>'}
+        </div>
       </div>
-      <div class="am-section-title">Recent Work Orders</div>
-      <div class="am-list">
-        ${workOrders.length ? workOrders.map(w => `
-          <div class="am-list-item am-clickable" data-wo-id="${esc(w.msdyn_workorderid)}">
-            <div class="am-list-item-title">${esc(w.msdyn_name||'—')}</div>
-            <div class="am-list-item-sub">${esc(w['msdyn_systemstatus@OData.Community.Display.V1.FormattedValue']||'')}${fmtDate(w.createdon) !== '—' ? ' · ' + fmtDate(w.createdon) : ''}</div>
-          </div>`).join('') : '<div class="am-empty">No work orders on file.</div>'}
+      <div class="am-section am-collapsed">
+        <div class="am-section-title am-toggle">Systems (${assets.length})<span class="am-caret">&#9656;</span></div>
+        <div class="am-list">
+          ${assets.length ? assets.map(s => {
+            const tag = s.wc_assettag || s.msdyn_assettag || '';
+            const sub = [tag ? 'Tag ' + tag : '', s.wc_knumber ? 'K ' + s.wc_knumber : '', s.wc_seriallotnumber ? 'S/N ' + s.wc_seriallotnumber : '', fv(s,'statuscode')].filter(Boolean).join(' · ');
+            return `<div class="am-list-item am-clickable" data-asset-id="${esc(s.msdyn_customerassetid)}">
+              <div class="am-list-item-title">${esc(s.msdyn_name||'—')}</div>
+              <div class="am-list-item-sub">${esc(sub || '—')}</div>
+            </div>`;
+          }).join('') : '<div class="am-empty">No systems on file.</div>'}
+        </div>
+      </div>
+      <div class="am-section am-collapsed">
+        <div class="am-section-title am-toggle">Recent Work Orders (${workOrders.length})<span class="am-caret">&#9656;</span></div>
+        <div class="am-list">
+          ${workOrders.length ? workOrders.map(w => `
+            <div class="am-list-item am-clickable" data-wo-id="${esc(w.msdyn_workorderid)}">
+              <div class="am-list-item-title">${esc(w.msdyn_name||'—')}</div>
+              <div class="am-list-item-sub">${esc(w['msdyn_systemstatus@OData.Community.Display.V1.FormattedValue']||'')}${fmtDate(w.createdon) !== '—' ? ' · ' + fmtDate(w.createdon) : ''}</div>
+            </div>`).join('') : '<div class="am-empty">No work orders on file.</div>'}
+        </div>
       </div>`;
+    body.querySelectorAll('.am-toggle').forEach(t =>
+      t.addEventListener('click', () => t.closest('.am-section').classList.toggle('am-collapsed')));
     body.querySelectorAll('[data-contact-id]').forEach(el =>
       el.addEventListener('click', () => window.api.openContact(el.dataset.contactId, orgUrl, 'Contact')));
+    body.querySelectorAll('[data-asset-id]').forEach(el =>
+      el.addEventListener('click', () => openAssetDetail(el.dataset.assetId)));
     body.querySelectorAll('[data-wo-id]').forEach(el =>
       el.addEventListener('click', () => window.api.openWorkOrderDirect(el.dataset.woId, orgUrl, 'Work Order')));
   } catch (e) {
