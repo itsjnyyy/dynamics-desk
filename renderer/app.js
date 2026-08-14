@@ -1316,7 +1316,8 @@ function renderAssets(records) {
 
 const ASSETS_DETAIL_SELECT = 'msdyn_customerassetid,msdyn_name,wc_assettag,msdyn_assettag,wc_seriallotnumber,' +
   'statuscode,wc_knumber,msdyn_manufacturingdate,_msdyn_parentasset_value,_wc_warrantyservicecontract_value,' +
-  '_msdyn_masterasset_value,_msdyn_product_value,_wc_manufacturer_value,_msdyn_workorderproduct_value';
+  '_msdyn_masterasset_value,_msdyn_product_value,_wc_manufacturer_value,_msdyn_workorderproduct_value,' +
+  '_msdyn_account_value,_msdyn_functionallocation_value';
 
 function fv(obj, field) {
   if (!obj) return '';
@@ -1343,6 +1344,7 @@ async function openAssetDetail(row) {
       <div class="am-sub">Asset Tag: ${esc(tag)}</div>
 
       <div class="am-grid">
+        <div><div class="am-field-label">Site</div><div class="am-field-value">${esc(fv(a,'_msdyn_functionallocation_value') || fv(a,'_msdyn_account_value') || '—')}</div></div>
         <div><div class="am-field-label">Asset Status</div><div class="am-field-value">${esc(fv(a,'statuscode')||'—')}</div></div>
         <div><div class="am-field-label">K Number</div><div class="am-field-value">${esc(a.wc_knumber||'—')}</div></div>
         <div><div class="am-field-label">Parent Asset</div><div class="am-field-value">${esc(fv(a,'_msdyn_parentasset_value')||'—')}</div></div>

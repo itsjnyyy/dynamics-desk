@@ -487,7 +487,8 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') $('account-m
 // Customer asset detail modal — mirrors the Assets-tab modal in the main window.
 const ASSETS_DETAIL_SELECT = 'msdyn_customerassetid,msdyn_name,wc_assettag,msdyn_assettag,wc_seriallotnumber,' +
   'statuscode,wc_knumber,msdyn_manufacturingdate,_msdyn_parentasset_value,_wc_warrantyservicecontract_value,' +
-  '_msdyn_masterasset_value,_msdyn_product_value,_wc_manufacturer_value,_msdyn_workorderproduct_value';
+  '_msdyn_masterasset_value,_msdyn_product_value,_wc_manufacturer_value,_msdyn_workorderproduct_value,' +
+  '_msdyn_account_value,_msdyn_functionallocation_value';
 
 async function openAssetDetail(assetId) {
   const modal = $('asset-modal'), body = $('asset-modal-body');
@@ -503,6 +504,7 @@ async function openAssetDetail(assetId) {
       <div class="am-title">${esc(a.msdyn_name || '—')}</div>
       <div class="am-sub">Asset Tag: ${esc(tag)}</div>
       <div class="am-grid">
+        <div><div class="am-field-label">Site</div><div class="am-field-value">${esc(fv(a,'_msdyn_functionallocation_value') || fv(a,'_msdyn_account_value') || '—')}</div></div>
         <div><div class="am-field-label">Asset Status</div><div class="am-field-value">${esc(fv(a,'statuscode')||'—')}</div></div>
         <div><div class="am-field-label">K Number</div><div class="am-field-value">${esc(a.wc_knumber||'—')}</div></div>
         <div><div class="am-field-label">Parent Asset</div><div class="am-field-value">${esc(fv(a,'_msdyn_parentasset_value')||'—')}</div></div>
@@ -1128,6 +1130,87 @@ function htmlToText(s) {
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
+// If an annotation is an image attachment, return a data: URL for it (else null).
+function noteImageSrc(n) {
+  if (n && n.isdocument && n.documentbody && n.mimetype && n.mimetype.toLowerCase().startsWith('image/')) {
+    return `data:${n.mimetype};base64,${n.documentbody}`;
+  }
+  return null;
+}
+// Non-image attachment filename (for a small paperclip line), else null.
+function noteFileName(n) {
+  if (n && n.isdocument && n.documentbody && !(n.mimetype && n.mimetype.toLowerCase().startsWith('image/'))) {
+    return n.filename || 'attachment';
+  }
+  return null;
+}
+// Move <img src> to data-src so the image doesn't try to load before we can fetch
+// it through the authenticated Dynamics session.
+function deferImgSrc(html) {
+  return String(html || '').replace(/<img([^>]*?)\ssrc=(["'])(.*?)\2/gi, (m, pre, q, src) => `<img${pre} data-src=${q}${src}${q}`);
+}
+// Rich-text notes embed images as Dynamics URLs that require auth. Fetch them via
+// the warm session (same origin) and return a data: URL.
+// Fetch a note/rich-text image through the authenticated Dynamics session and return a
+// downscaled JPEG data URL (small enough to cross IPC). Returns null on any failure
+// (e.g. no ReadAccess on the Rich Text Attachment entity).
+async function fetchAuthedDataUrl(src) {
+  if (!src) return null;
+  const url = /^https?:/i.test(src) ? src : orgUrl + (src.startsWith('/') ? '' : '/') + src;
+  const script = `(async()=>{try{
+    const r=await fetch(${JSON.stringify(url)},{credentials:'include'});
+    if(!r.ok) return null;
+    const b=await r.blob();
+    if(!b||!b.size||!/^image\\//.test(b.type||'')) return null;
+    let out;
+    try{
+      const bmp=await createImageBitmap(b);
+      const max=1400; let w=bmp.width,h=bmp.height;
+      if(w>max||h>max){const s=Math.min(max/w,max/h);w=Math.round(w*s);h=Math.round(h*s);}
+      const c=new OffscreenCanvas(w,h); c.getContext('2d').drawImage(bmp,0,0,w,h);
+      const jb=await c.convertToBlob({type:'image/jpeg',quality:0.85});
+      out=await new Promise(res=>{const fr=new FileReader();fr.onloadend=()=>res(String(fr.result));fr.readAsDataURL(jb);});
+    }catch(_){
+      out=await new Promise(res=>{const fr=new FileReader();fr.onloadend=()=>res(String(fr.result));fr.readAsDataURL(b);});
+    }
+    return out;
+  }catch(e){return null;}})()`;
+  try {
+    const res = await Promise.race([
+      apiWv.executeJavaScript(script),
+      new Promise(r => setTimeout(() => r(null), 12000)),
+    ]);
+    return (typeof res === 'string' && res.startsWith('data:')) ? res : null;
+  } catch (_) { return null; }
+}
+// Fetch every embedded image through the authenticated session and swap it in.
+async function hydrateNoteImages(root) {
+  if (!root) return;
+  for (const img of [...root.querySelectorAll('img')]) {
+    // getAttribute returns the literal url even after the browser mangled a relative src.
+    const raw = img.getAttribute('data-src') || img.getAttribute('src') || '';
+    img.removeAttribute('data-src');
+    if (!raw || raw.startsWith('data:')) continue;
+    img.removeAttribute('src'); // stop the failing (cross-origin) load
+    img.classList.add('note-img');
+    const dataUrl = await fetchAuthedDataUrl(raw);
+    if (dataUrl) {
+      img.src = dataUrl;
+    } else {
+      const ph = document.createElement('div');
+      ph.className = 'note-photo-missing';
+      ph.textContent = '🔒 Photo not viewable here (needs Read access to Rich Text Attachment in Dynamics)';
+      img.replaceWith(ph);
+    }
+  }
+}
+// Render a note's body: rich HTML (with images) if it's HTML, else plain text.
+function renderNoteBodyHtml(notetext) {
+  if (!notetext) return '';
+  if (/<[a-z][\s\S]*>/i.test(notetext)) return `<div class="note-body note-rich">${deferImgSrc(notetext)}</div>`;
+  return `<div class="note-body">${esc(notetext).replace(/\n/g,'<br>')}</div>`;
+}
+
 async function loadTimeline() {
   const el = $('timeline-list');
   if (!woId) { el.innerHTML = `<div class="empty-msg">No work order linked</div>`; return; }
@@ -1135,18 +1218,25 @@ async function loadTimeline() {
   try {
     const [activities, notes] = await Promise.all([
       xrmList('activitypointer', `?$select=activityid,subject,activitytypecode,createdon,description&$filter=_regardingobjectid_value eq ${woId}&$orderby=createdon desc&$top=100`).catch(()=>[]),
-      xrmList('annotation', `?$select=subject,notetext,createdon,_createdby_value&$filter=_objectid_value eq ${woId}&$orderby=createdon desc&$top=100`).catch(()=>[]),
+      xrmList('annotation', `?$select=subject,notetext,createdon,_createdby_value,isdocument,mimetype,filename,documentbody&$filter=_objectid_value eq ${woId}&$orderby=createdon desc&$top=100`).catch(()=>[]),
     ]);
     const items = [];
     activities.forEach(a => items.push({ when:a.createdon, type:prettyActivityType(a.activitytypecode), title:a.subject||prettyActivityType(a.activitytypecode), body:a.description||'' }));
-    notes.forEach(n => items.push({ when:n.createdon, type:'Note', title:n.subject||'Note', body:n.notetext||'', author:n['_createdby_value@OData.Community.Display.V1.FormattedValue']||'' }));
+    notes.forEach(n => items.push({ when:n.createdon, type:'Note', title:n.subject||'Note', body:n.notetext||'', author:n['_createdby_value@OData.Community.Display.V1.FormattedValue']||'', img:noteImageSrc(n), file:noteFileName(n) }));
     items.sort((a,b) => new Date(b.when) - new Date(a.when));
     timelineLoaded = true;
     if (!items.length) { el.innerHTML = `<div class="empty-msg">No timeline activity yet</div>`; return; }
     el.innerHTML = items.map((it, i) => {
-      const body = it.body ? htmlToText(it.body) : '';
-      // "Long" = worth collapsing behind a toggle so the list stays scannable.
-      const long = body.length > 260 || body.split('\n').length > 5;
+      const hasEmbeddedImg = /<img/i.test(it.body || '');
+      let bodyBlock;
+      if (hasEmbeddedImg) {
+        // Rich note with embedded photo(s) — render the HTML and hydrate images.
+        bodyBlock = `<div class="note-rich tl-rich">${deferImgSrc(it.body)}</div>`;
+      } else {
+        const body = it.body ? htmlToText(it.body) : '';
+        const long = body.length > 260 || body.split('\n').length > 5;
+        bodyBlock = body ? `<div class="tl-body${long ? ' clamp' : ''}" data-i="${i}">${esc(body)}</div>${long ? `<button class="tl-toggle" data-i="${i}">Show more</button>` : ''}` : '';
+      }
       return `
       <div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 12px;">
         <div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline;">
@@ -1154,7 +1244,8 @@ async function loadTimeline() {
           <span style="font-size:11px;color:var(--muted2);white-space:nowrap;">${esc(fmtDate(it.when))}</span>
         </div>
         <div style="font-size:11px;color:var(--accent);margin-top:2px;">${esc(it.type)}${it.author?` · ${esc(it.author)}`:''}</div>
-        ${body ? `<div class="tl-body${long ? ' clamp' : ''}" data-i="${i}">${esc(body)}</div>${long ? `<button class="tl-toggle" data-i="${i}">Show more</button>` : ''}` : ''}
+        ${bodyBlock}
+        ${it.img ? `<img class="tl-img" src="${it.img}" alt="${esc(it.file||'')}"/>` : (it.file ? `<div class="tl-file">📎 ${esc(it.file)}</div>` : '')}
       </div>`;
     }).join('');
 
@@ -1166,6 +1257,7 @@ async function loadTimeline() {
         btn.textContent = collapsed ? 'Show more' : 'Show less';
       });
     });
+    hydrateNoteImages(el);
   } catch(e) { el.innerHTML = `<div class="empty-msg">Error: ${esc(e.message)}</div>`; }
 }
 
@@ -1175,16 +1267,19 @@ async function loadNotes() {
   try {
     const target = woId||bookingId;
     const rows = await xrmList('annotation',
-      `?$select=subject,notetext,createdon,_createdby_value&$filter=_objectid_value eq ${target}&$orderby=createdon desc&$top=50`);
+      `?$select=subject,notetext,createdon,_createdby_value,isdocument,mimetype,filename,documentbody&$filter=_objectid_value eq ${target}&$orderby=createdon desc&$top=50`);
     notesLoaded=true;
     if (!rows.length) { $('notes-list').innerHTML=`<div class="empty-msg">No notes yet</div>`; return; }
     $('notes-list').innerHTML = rows.map(n => {
       const author = n['_createdby_value@OData.Community.Display.V1.FormattedValue']||'Unknown';
+      const img = noteImageSrc(n), file = noteFileName(n);
       return `<div class="note-card">
         <div class="note-head"><span class="note-subject">${esc(n.subject||'Note')}</span><span class="note-meta">${esc(author)} · ${fmtDate(n.createdon)}</span></div>
-        <div class="note-body">${esc(n.notetext||'').replace(/\n/g,'<br>')}</div>
+        ${renderNoteBodyHtml(n.notetext)}
+        ${img ? `<img class="note-img" src="${img}" alt="${esc(file||'')}"/>` : (file ? `<div class="tl-file">📎 ${esc(file)}</div>` : '')}
       </div>`;
     }).join('');
+    hydrateNoteImages($('notes-list'));
   } catch(e) { $('notes-list').innerHTML=`<div class="empty-msg">Failed to load notes</div>`; }
 }
 
