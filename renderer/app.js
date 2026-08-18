@@ -7,8 +7,8 @@ const spWv    = $('sp-wv');
 const loginWv = $('login-wv');
 
 // SharePoint PTO calendar (source of truth for who's out)
-const SP_SITE = 'https://YOUR-TENANT.sharepoint.com/sites/YOUR-SITE';
-const SP_TIMEOFF_LIST = 'YOUR-TIME-OFF-LIST';
+const SP_SITE = 'https://prestigemedicalimaging.sharepoint.com/sites/PrestigeMedicalImaging';
+const SP_TIMEOFF_LIST = 'Time Off Calendar';
 async function spFetch(apiPath) {
   const url = SP_SITE + apiPath;
   const script = `fetch(${JSON.stringify(url)},{headers:{Accept:'application/json;odata=nometadata'},credentials:'include'}).then(r=>r.text()).catch(e=>JSON.stringify({__err:String(e&&e.message||e)}))`;
@@ -1669,6 +1669,137 @@ $('travel-wo-btn').addEventListener('click', async () => {
   const details = await askTravelDetails();
   if (!details) return;
   createTravelWorkOrder(details);
+});
+
+// ── Quick-create: personal work order (yourself as the contact) ──────────────
+// Reuses the same account / incident type / priority / price list / territory
+// template as the Travel WO, but asks for a description and who to assign it to,
+// and sets Reported By Contact to the signed-in user.
+async function currentUserContactId() {
+  try {
+    const uname = String(await apiWv.executeJavaScript('Xrm.Utility.getGlobalContext().getUserName()') || '').trim();
+    if (!uname) return null;
+    const res = await xrmFetch('contact', `?$select=contactid&$filter=fullname eq '${uname.replace(/'/g, "''")}'&$top=1`);
+    return res[0]?.contactid || null;
+  } catch (_) { return null; }
+}
+
+// Ask for a description + which team member to assign the personal WO to.
+function askMyWoDetails() {
+  return new Promise(resolve => {
+    if (!SCHEDULE_RESOURCES.length) { toast('No team members configured', true); resolve(null); return; }
+    const pad = n => String(n).padStart(2, '0');
+    const now = new Date();
+    const defVal = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
+    const fld = 'width:100%;padding:8px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;box-sizing:border-box;';
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9998;display:flex;align-items:center;justify-content:center;';
+    overlay.innerHTML = `
+      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:20px;width:380px;box-shadow:0 10px 40px rgba(0,0,0,.4);">
+        <div style="font-size:15px;font-weight:600;margin-bottom:14px;">New Work Order</div>
+        <label style="display:block;font-size:12px;color:var(--muted);margin-bottom:5px;">Description</label>
+        <textarea id="mw-desc" rows="3" placeholder="What is this work order for?" style="${fld}margin-bottom:14px;resize:vertical;font-family:inherit;"></textarea>
+        <label style="display:block;font-size:12px;color:var(--muted);margin-bottom:5px;">Assign to</label>
+        <select id="mw-resource" style="${fld}margin-bottom:14px;">
+          ${SCHEDULE_RESOURCES.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('')}
+        </select>
+        <label style="display:block;font-size:12px;color:var(--muted);margin-bottom:5px;">Start time (1 hour)</label>
+        <input id="mw-start" type="datetime-local" style="${fld}margin-bottom:18px;" value="${defVal}"/>
+        <div style="display:flex;justify-content:flex-end;gap:8px;">
+          <button id="mw-cancel" class="btn btn-ghost btn-sm">Cancel</button>
+          <button id="mw-create" class="btn btn-primary btn-sm">Create</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const close = val => { overlay.remove(); resolve(val); };
+    overlay.querySelector('#mw-cancel').addEventListener('click', () => close(null));
+    overlay.addEventListener('click', e => { if (e.target === overlay) close(null); });
+    overlay.querySelector('#mw-desc').focus();
+    overlay.querySelector('#mw-create').addEventListener('click', () => {
+      const description = overlay.querySelector('#mw-desc').value.trim();
+      const resourceName = overlay.querySelector('#mw-resource').value;
+      const startVal = overlay.querySelector('#mw-start').value;
+      if (!description) { overlay.querySelector('#mw-desc').focus(); return; }
+      if (!startVal) { overlay.querySelector('#mw-start').focus(); return; }
+      close({ description, resourceName, start: new Date(startVal) });
+    });
+  });
+}
+
+async function createMyWorkOrder(details) {
+  const btn = $('my-wo-btn');
+  if (!xrmReady) { toast('Not connected to Dynamics yet', true); return; }
+  btn.disabled = true; const label = btn.querySelector('span').textContent; btn.querySelector('span').textContent = 'Creating…';
+  try {
+    // 1) Create the work order (same template as Travel WO, custom description)
+    const nav = await getNavPropMap('msdyn_workorder');
+    const woPayload = { wc_workorderproblemdescription: details.description };
+    const bind = async (attr, id) => {
+      const rel = nav[attr];
+      if (!rel) return;
+      const set = await entitySetOf(rel.target);
+      woPayload[`${rel.nav}@odata.bind`] = `/${set}(${id})`;
+    };
+    await bind('msdyn_serviceaccount',      TRAVEL_WO.serviceaccount);
+    await bind('msdyn_primaryincidenttype', TRAVEL_WO.incidenttype);
+    await bind('msdyn_priority',            TRAVEL_WO.priority);
+    await bind('msdyn_pricelist',           TRAVEL_WO.pricelist);
+    await bind('msdyn_serviceterritory',    TRAVEL_WO.serviceterritory);
+    // Reported By Contact = the signed-in user (yourself).
+    try {
+      const myContact = await currentUserContactId();
+      if (myContact && nav.msdyn_reportedbycontact) await bind('msdyn_reportedbycontact', myContact);
+    } catch (_) {}
+    const woId = await xrmCreate('msdyn_workorder', woPayload);
+    let woName = 'work order';
+    try { woName = (await xrmRetrieve('msdyn_workorder', woId, '?$select=msdyn_name')).msdyn_name || woName; } catch (_) {}
+
+    // 2) Book it on the chosen team member's schedule (same as Travel WO).
+    let bookingNote = '';
+    try {
+      const resourceId = await resourceIdByName(details.resourceName);
+      if (!resourceId) throw new Error('Could not find bookable resource for ' + details.resourceName);
+      const scheduled = await xrmFetch('bookingstatus', `?$select=bookingstatusid&$filter=name eq 'Scheduled'&$orderby=createdon asc&$top=1`);
+      const schedStatusId = scheduled[0]?.bookingstatusid;
+      const bnav = await getNavPropMap('bookableresourcebooking');
+      const start = details.start;
+      const end   = new Date(start.getTime() + TRAVEL_DURATION_MIN * 60000);
+      const bPayload = {
+        starttime: start.toISOString(),
+        endtime:   end.toISOString(),
+        msdyn_actualarrivaltime: start.toISOString(),
+        duration:  TRAVEL_DURATION_MIN,
+      };
+      const bbind = async (attr, id) => {
+        const rel = bnav[attr];
+        if (!rel || !id) return;
+        const set = await entitySetOf(rel.target);
+        bPayload[`${rel.nav}@odata.bind`] = `/${set}(${id})`;
+      };
+      await bbind('msdyn_workorder', woId);
+      await bbind('resource',        resourceId);
+      await bbind('bookingstatus',   schedStatusId);
+      await xrmCreate('bookableresourcebooking', bPayload);
+      bookingNote = ' + booking';
+    } catch (be) {
+      console.warn('WO booking failed:', be.message);
+      bookingNote = ' (work order only — booking must be added manually: ' + be.message.slice(0, 80) + ')';
+    }
+
+    toast(`Created ${woName}${bookingNote}`);
+    if (activeTab === 'bookings') loadBookings(true);
+    if (activeTab === 'schedule') renderSchedule(true);
+  } catch (e) {
+    toast('Failed to create work order: ' + e.message, true);
+  } finally {
+    btn.disabled = false; btn.querySelector('span').textContent = label;
+  }
+}
+$('my-wo-btn').addEventListener('click', async () => {
+  if (!xrmReady) { toast('Not connected to Dynamics yet', true); return; }
+  const details = await askMyWoDetails();
+  if (!details) return;
+  createMyWorkOrder(details);
 });
 
 // ── Auto-update ──────────────────────────────────────────────────────────────
