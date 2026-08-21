@@ -158,6 +158,60 @@ async function xrmUpdate(entity, id, data) {
   ));
   if (r?.__err) throw new Error(r.__err);
 }
+
+// The "Summary" box now maps to the org's new "Booking Summary" field (which
+// replaced "Work Order Summary" in Dynamics). Its logical name / host entity
+// isn't hard-coded — we resolve it from metadata so a wrong guess can never
+// silently drop a tech's notes. Resolved to { entity, logical } and cached.
+let summaryField;          // undefined = not tried, null = not found, obj = resolved
+async function resolveSummaryField() {
+  if (summaryField !== undefined) return summaryField;
+  const norm = s => (s || '').toLowerCase().replace(/[^a-z]/g, '');
+  const scan = async (entity) => {
+    const url = `${orgUrl}/api/data/v9.2/EntityDefinitions(LogicalName='${entity}')/Attributes?$select=LogicalName,DisplayName,AttributeType`;
+    try {
+      const json = await apiWv.executeJavaScript(
+        `fetch(${JSON.stringify(url)}, {headers:{Accept:'application/json'}}).then(r=>r.json()).then(d=>JSON.stringify(d)).catch(e=>JSON.stringify({__err:e.message}))`
+      );
+      const r = JSON.parse(json);
+      if (!Array.isArray(r?.value)) return null;
+      const textFields = r.value.filter(a => a.AttributeType === 'Memo' || a.AttributeType === 'String');
+      const label = a => norm(a.DisplayName?.UserLocalizedLabel?.Label);
+      // The editable field is labeled "Booking Summary Notes" in this org. Prefer
+      // that exact label, then a plain "Booking Summary", then anything containing it.
+      const hit = textFields.find(a => label(a) === 'bookingsummarynotes')
+               || textFields.find(a => label(a) === 'bookingsummary')
+               || textFields.find(a => label(a).includes('bookingsummarynotes'))
+               || textFields.find(a => label(a).includes('bookingsummary'));
+      return hit ? { entity, logical: hit.LogicalName } : null;
+    } catch (_) { return null; }
+  };
+  // Booking Summary lives on the work order form; check the booking entity too.
+  summaryField = (await scan('msdyn_workorder')) || (await scan('bookableresourcebooking')) || null;
+  return summaryField;
+}
+
+// Fetch the current Booking Summary value and drop it into its box.
+async function loadBookingSummary() {
+  const f = await resolveSummaryField();
+  if (!f) return;
+  try {
+    const id = f.entity === 'bookableresourcebooking' ? bookingId : woId;
+    if (!id) return;
+    const rec = await xrmGet(f.entity, id, `?$select=${f.logical}`);
+    if ($('f-booking-summary')) $('f-booking-summary').value = rec?.[f.logical] || '';
+  } catch (_) {}
+}
+
+// Fetch the current Work Order Summary value (msdyn_workordersummary). Resilient:
+// if the field no longer exists on this org, the box just stays empty.
+async function loadWoSummary() {
+  if (!woId) return;
+  try {
+    const rec = await xrmGet('msdyn_workorder', woId, '?$select=msdyn_workordersummary');
+    if ($('f-wo-summary')) $('f-wo-summary').value = rec?.msdyn_workordersummary || '';
+  } catch (_) {}
+}
 async function xrmCreate(entity, data) {
   const r = JSON.parse(await apiWv.executeJavaScript(
     `(async()=>{try{const __d=${JSON.stringify(data)};const r=await Xrm.WebApi.createRecord("${entity}",__d);return JSON.stringify({id:r.id});}catch(e){return JSON.stringify({__err:e.message})}})()`
@@ -202,7 +256,7 @@ async function loadData() {
       '?$select=msdyn_workordertypeid,msdyn_name&$orderby=msdyn_name asc').catch(() => []);
 
     wo = await xrmGet('msdyn_workorder', woId,
-      '?$select=msdyn_name,msdyn_systemstatus,msdyn_workordersummary,msdyn_instructions,' +
+      '?$select=msdyn_name,msdyn_systemstatus,msdyn_instructions,' +
       'msdyn_address1,msdyn_address2,msdyn_city,msdyn_stateorprovince,msdyn_postalcode,msdyn_country,' +
       '_msdyn_serviceaccount_value,_msdyn_billingaccount_value,_msdyn_workordertype_value,' +
       '_msdyn_serviceterritory_value,_msdyn_substatus_value,_msdyn_priority_value,_msdyn_customerasset_value,' +
@@ -385,7 +439,7 @@ function buildWorkOrderTypeDropdown() {
 }
 
 function wireOpenDynamics() {
-  const APP_ID = 'YOUR-MODEL-DRIVEN-APP-ID';
+  const APP_ID = '5f751dd8-1b58-eb11-bb23-000d3a3b3842';
   const url = woId
     ? `${orgUrl}/main.aspx?appid=${APP_ID}&pagetype=entityrecord&etn=msdyn_workorder&id=${woId}`
     : `${orgUrl}/main.aspx?appid=${APP_ID}&pagetype=entityrecord&etn=bookableresourcebooking&id=${bookingId}`;
@@ -596,7 +650,10 @@ function renderAll() {
   $('f-state').value        = wo?.msdyn_stateorprovince  || '';
   $('f-zip').value          = wo?.msdyn_postalcode       || '';
   $('f-country').value      = wo?.msdyn_country          || '';
-  $('f-summary').value      = wo?.msdyn_workordersummary || '';
+  $('f-booking-summary').value = '';  // filled async from the Booking Summary field
+  $('f-wo-summary').value      = '';  // filled async from msdyn_workordersummary
+  loadBookingSummary();
+  loadWoSummary();
   $('f-instructions').value = wo?.msdyn_instructions     || '';
   $('f-problem').value = wo?.wc_workorderproblemdescription || '';
 }
@@ -625,7 +682,8 @@ function listenEdits() {
 
   [['f-addr1','msdyn_address1'],['f-addr2','msdyn_address2'],['f-city','msdyn_city'],
    ['f-state','msdyn_stateorprovince'],['f-zip','msdyn_postalcode'],['f-country','msdyn_country'],
-   ['f-summary','msdyn_workordersummary'],['f-instructions','msdyn_instructions'],
+   ['f-booking-summary','_bookingSummary'],['f-wo-summary','msdyn_workordersummary'],
+   ['f-instructions','msdyn_instructions'],
    ['f-problem','wc_workorderproblemdescription']
   ].forEach(([id,key]) => $(id)?.addEventListener('input', () => { dirty[key]=$(id).value; showSave(); }));
 
@@ -641,17 +699,34 @@ async function save() {
   btn.textContent = 'Saving…'; btn.disabled = true;
   const snap = {...dirty};
   try {
+    // Resolve the Booking Summary field first. Dynamics has a rule that blocks
+    // completing a booking unless its notes are filled, so the summary must be
+    // written BEFORE (or together with) the booking-status change — never after.
+    let summaryF = null;
+    if (snap._bookingSummary !== undefined) {
+      summaryF = await resolveSummaryField();
+      if (!summaryF) throw new Error('Could not find the Booking Summary field in Dynamics');
+    }
+
     const bPatch = {};
     if (snap._bookingStatus) bPatch['BookingStatus@odata.bind'] = `/bookingstatuses(${snap._bookingStatus})`;
     if (snap._starttime)      bPatch.starttime          = new Date(snap._starttime).toISOString();
     if (snap._endtime)        bPatch.endtime            = new Date(snap._endtime).toISOString();
     if (snap._actualarrival)  bPatch.msdyn_actualarrivaltime = new Date(snap._actualarrival).toISOString();
     if (snap._resource)       bPatch['Resource@odata.bind'] = `/bookableresources(${snap._resource})`;
+    // If Booking Summary lives on the booking, set it in the SAME update as the
+    // status so the notes are present when the completion rule evaluates.
+    if (summaryF && summaryF.entity === 'bookableresourcebooking') {
+      bPatch[summaryF.logical] = snap._bookingSummary;
+    } else if (summaryF) {
+      // Otherwise it's on the work order — write it before touching the booking.
+      if (woId) await xrmUpdate('msdyn_workorder', woId, { [summaryF.logical]: snap._bookingSummary });
+    }
     if (Object.keys(bPatch).length) await xrmUpdate('bookableresourcebooking', bookingId, bPatch);
 
     const wPatch = {};
     ['msdyn_address1','msdyn_address2','msdyn_city','msdyn_stateorprovince',
-     'msdyn_postalcode','msdyn_country','msdyn_workordersummary','msdyn_instructions','wc_workorderproblemdescription'
+     'msdyn_postalcode','msdyn_country','msdyn_instructions','msdyn_workordersummary','wc_workorderproblemdescription'
     ].forEach(k => { if (snap[k] !== undefined) wPatch[k] = snap[k]; });
     if (woId && Object.keys(wPatch).length) await xrmUpdate('msdyn_workorder', woId, wPatch);
 
