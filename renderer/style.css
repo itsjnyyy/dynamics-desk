@@ -41,6 +41,17 @@ html, body {
 
 .hidden { display: none !important; }
 
+/* The app chrome is unselectable (body user-select:none), but read-only data
+   should be copyable: data-table cells and the account/asset detail popups. */
+.data-table td,
+#account-modal-card,
+#asset-modal-card { user-select: text; }
+/* ...except the interactive bits inside those popups (clickable rows/toggles). */
+#account-modal-card .am-section-title.am-toggle,
+#account-modal-card .am-list-item.am-clickable,
+#asset-modal-card .am-section-title.am-toggle,
+#asset-modal-card .am-list-item.am-clickable { user-select: none; }
+
 /* ── Overlays ────────────────────────────────────────────────────────────── */
 #setup-overlay,
 #login-overlay {
