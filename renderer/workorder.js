@@ -421,12 +421,22 @@ function buildSubstatusDropdown() {
   sel.value = wo._msdyn_substatus_value || '';
 }
 
+// Only these work order types are offered in the dropdown: Phone Call, Remote
+// Support, and Field Service (the canonical one — the org has three types named
+// "Field Service" and this is the correct one, the type used on WO 72766).
+const ALLOWED_WORK_ORDER_TYPE_IDS = [
+  'YOUR-PHONE-CALL-TYPE-GUID', // Phone Call
+  'YOUR-REMOTE-SUPPORT-TYPE-GUID', // Remote Support
+  'YOUR-FIELD-SERVICE-TYPE-GUID', // Field Service (canonical)
+];
+
 function buildWorkOrderTypeDropdown() {
   const sel = $('f-workordertype');
   if (!sel) return;
   const current = wo._msdyn_workordertype_value || '';
   const currentName = wo['_msdyn_workordertype_value@OData.Community.Display.V1.FormattedValue'] || '';
-  const opts = workOrderTypes.slice();
+  // Restrict the choices to the allowed types.
+  const opts = workOrderTypes.filter(t => ALLOWED_WORK_ORDER_TYPE_IDS.includes(t.msdyn_workordertypeid));
   // Make sure the work order's current type is always an option, even if the list
   // hasn't loaded (so the field never appears blank for an already-typed WO).
   if (current && !opts.some(t => t.msdyn_workordertypeid === current)) {
